@@ -211,13 +211,89 @@ principals admission cannot bind anyway (cluster-admins, impersonators).
   eager allocator can hand a plain Service a reserved-but-inert address
   if explicitly steered there. Detected (§5), not prevented — prevention
   requires the admission policy (§6) plus, ultimately, allocation being
-  refused driver-side, which the proposal defers to per-provider
-  provisioners.
+  refused driver-side. §8 records a design that closes most of this gap
+  by making the reservation visible to MetalLB itself.
 - **No backwards inventory** (proposal §6): addresses MetalLB assigned to
-  plain Services are not imported into the ledger after the fact.
+  plain Services are not imported into the ledger after the fact. A
+  related sharper edge: the first-free allocator (§2) consults only the
+  ledger, so it can pick an IP that MetalLB assigned to a plain Service
+  outside the model's knowledge; the collision then surfaces as a failed
+  pin or a Conflict rather than being avoided. §8 eliminates this class
+  of error.
 - **L2 only, CIDRs only**: BGP advertisement rendering and MetalLB's
   `a.b.c.d-e.f.g.h` range syntax in class parameters are future
   parameters, not shapes the algorithm depends on.
 - **Dual-stack pinning** assumes the Service's `ipFamilies` accept both
   pinned addresses; the driver orders v4 first but does not reconcile
   family policy mismatches.
+
+## 8. Design alternative: holding reservations with placeholder Services
+
+*Status: analyzed, judged superior for allocation and holding, not yet
+implemented. Recorded here as the intended direction.*
+
+The implemented driver keeps the reservation only in the ledger: MetalLB
+has no idea a reserved-but-inert address is taken, which is why the whole
+§6 posture leans on `autoAssign: false` plus admission, with §5 as the
+backstop. The alternative: **the driver reserves an address by creating a
+placeholder Service and letting MetalLB allocate to it** — manufacturing
+the reservation primitive MetalLB lacks out of MetalLB's own allocation
+unit.
+
+**Reserve.** For each family a claim misses, the driver creates a
+placeholder Service in its own namespace: `type: LoadBalancer`, no
+selector (so no endpoints), one throwaway port,
+`allocateLoadBalancerNodePorts: false`, drawing from the class pool by
+explicit pool selection. MetalLB — the allocator of record — assigns an
+IP; the driver observes it and only then creates the `IPAddress`,
+recording the observed fact (the same allocate–observe–record flow a
+cloud driver uses, with the placeholder playing the role of the provider
+reservation object and its name the stable handle). A `Dual` claim uses
+one dual-stack placeholder. The placeholder is owner-referenced to the
+`IPAddress` and finalizer-protected; a recreate-and-repin loop restores
+it if deleted, with theft during the outage surfacing as `Lost`/`Conflict`.
+
+**Hold.** With no endpoints MetalLB does not announce the address —
+reserved but inert, exactly the wanted semantics — yet it *is* assigned
+in MetalLB's books, so MetalLB itself refuses to give it to any other
+Service, pinned or not. The reservation is enforced by the backend, not
+just recorded beside it. Under `Retain`, a `Released` address stays held
+against MetalLB too. Teardown becomes real work at last: delete the
+placeholder, releasing the allocation.
+
+**What this buys** over §2's first-free allocator:
+
+1. The pre-association theft window (§7) mostly closes without admission:
+   MetalLB will not double-assign a held address.
+2. No parallel IPAM: allocation consults MetalLB's live state, so the
+   driver can never pick an IP some plain Service already holds — the
+   split-brain class of errors disappears, along with the driver's
+   reimplementation of range walking (dash syntax and avoid-lists come
+   free).
+3. Model consistency: MetalLB stops being a reservation-less backend and
+   becomes a provider with a reservation object; `Retain`/`Delete` map
+   onto keep/delete the placeholder.
+
+**The cost concentrates in the handoff** — moving the address between
+placeholder and real Service at (dis)association time:
+
+- *Shared handoff* (both Services carry `metallb.io/allow-shared-ip` with
+  a per-claim key; pin the real Service while the placeholder still
+  holds; then release the placeholder) is gapless, but MetalLB's sharing
+  rules require non-overlapping ports and `externalTrafficPolicy:
+  Cluster` — which forbids source-IP preservation and collides with the
+  whole-IP/1:1-NAT direction. Unacceptable as a universal requirement.
+- *Gap handoff* (unpin the placeholder, then pin the real Service, and
+  the mirror image on disassociation) opens a window in which the
+  address is unheld in MetalLB's books and the protection degrades to
+  exactly the implemented model: `autoAssign: false` + admission +
+  detection. The window is bounded by reconcile latency and exists only
+  during handoffs — versus permanently, today.
+
+**Verdict.** Adopt the placeholder mechanism for *allocation and
+holding*; keep the ledger authoritative and the association algorithm
+(§4) as is; use gap handoff unconditionally, with shared handoff as a
+best-effort optimization when the tenant Service happens to satisfy the
+sharing constraints. Everything else in this document — the association
+1:1 rules, conflict detection, reclaim semantics — is unchanged by the
+switch; only §2's allocation step and §5's teardown step are replaced.
