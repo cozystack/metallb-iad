@@ -31,16 +31,20 @@ spec:
     addresses: ["203.0.113.0/24"]   # CIDRs this class carves from
 ```
 
+MetalLB has no native reservation concept, so the driver manufactures
+one: **a reservation is held by a placeholder Service** — selectorless,
+`type: LoadBalancer`, living in a driver-owned namespace — which MetalLB
+assigns an address to but, having no endpoints, never announces. Held in
+MetalLB's own books, silent on the wire.
+
 Four controllers implement the driver side of the contract:
 
-- **Claim** — watches `IPAddressClaim`s stamped with this driver's name in
-  the `local.sdn.cozystack.io/provisioner` annotation and provisions an
-  `IPAddress` per missing family (first-free from the class CIDRs, skipping
-  IPv4 network/broadcast and anything already in the ledger). Addresses are
-  pre-bound via `claimRef`, carry the class's reclaim policy, a
-  `source.fromClass` marker, and the driver's teardown finalizer. MetalLB is
-  a self-allocating backend with no reservation concept, so this driver is
-  the IPAM of record: it implements **Allocate + Pin**, not Adopt.
+- **Claim** — for each family a stamped claim misses: create an
+  allocation placeholder drawing from the class's pool, let MetalLB (the
+  allocator of record) assign, observe the address, and record it as a
+  pre-bound `IPAddress` — with the class's reclaim policy, a
+  `source.fromClass` marker, and the driver's teardown finalizer. The
+  driver implements **Allocate + Pin**, not Adopt.
 - **Class** — renders the MetalLB configuration per served class: one
   `IPAddressPool` (`iad-<class>`) with `autoAssign: false` covering the
   class ranges, and one `L2Advertisement` selecting it, owner-referenced to
@@ -49,20 +53,19 @@ Four controllers implement the driver side of the contract:
 - **Service** — the association layer, a separate and reversible act. A
   tenant annotates a Service with
   `local.sdn.cozystack.io/ip-address-claim: <claim>` (same namespace, by
-  construction); the driver resolves claim → bound addresses, writes
-  MetalLB's `metallb.io/loadBalancerIPs` pin, and records
-  `IPAddress.status.associatedTo`. A second Service referencing an
+  construction); the driver performs the **gap handoff**: record the
+  association, release the hold placeholder, pin the workload with
+  MetalLB's `metallb.io/loadBalancerIPs`. A second Service referencing an
   associated claim is rejected loudly. Removing the annotation withdraws
-  the pin — the address stays bound: reserved, attached to nothing. The
-  driver only ever removes pins it wrote itself (tracked with a marker
-  annotation), never hand-written ones.
-- **IPAddress** — teardown and conflict recovery. On deletion it withdraws
-  a live pin and drops the finalizer (MetalLB has no per-address backend
-  object to deallocate). It also reconciles live Service assignments
-  against the ledger: a Service holding an address whose binding does not
-  authorize it drives the `IPAddress` to phase `Conflict` (detection, per
-  the design's layer 2 — never silent theft), and clears it once the
-  wrongful holder is gone.
+  the pin (only pins the driver wrote itself, never hand-written ones) and
+  the hold placeholder comes back — the address stays bound: reserved,
+  attached to nothing.
+- **IPAddress** — enforces the holding invariant (a placeholder pinned to
+  the address exists exactly while the address exists and is not
+  associated to a live workload), clears associations whose Service is
+  gone, tears down on deletion (delete the placeholder — releasing the
+  MetalLB allocation — and withdraw any pin), and recovers `Conflict`
+  once no Service wrongfully holds the address.
 
 ## Building
 
@@ -73,10 +76,17 @@ GOPRIVATE=github.com/lllamnyp go build ./...
 go test ./internal/...
 ```
 
-Run with `--metallb-namespace` if MetalLB does not live in `metallb-system`.
+Run with `--metallb-namespace` if MetalLB does not live in
+`metallb-system`, and `--placeholder-namespace` to choose where
+reservation placeholders live (default `metallb-iad-system`; tenants must
+have no write access to it).
 
 ## Not implemented (deliberately, for now)
 
+- The **shared handoff**: closing the brief unheld window during
+  (dis)association with a sequence of `metallb.io/allow-shared-ip`
+  Service mutations, where the workload's shape permits it. Planned as an
+  opportunistic upgrade over the gap handoff (design doc §5).
 - The `ValidatingAdmissionPolicy` that forbids tenants writing raw MetalLB
   pool/pin annotations (design §Security layer 1). It belongs in the same
   release as any real deployment of this driver, but is deployment

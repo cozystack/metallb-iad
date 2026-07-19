@@ -1,6 +1,6 @@
 module github.com/lllamnyp/metallb-iad
 
-go 1.23.0
+go 1.26
 
 godebug default=go1.23
 

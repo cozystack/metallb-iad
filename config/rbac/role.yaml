@@ -16,6 +16,8 @@ rules:
   resources:
   - services
   verbs:
+  - create
+  - delete
   - get
   - list
   - patch
@@ -36,6 +38,7 @@ rules:
   - ipaddresses
   verbs:
   - create
+  - delete
   - get
   - list
   - patch

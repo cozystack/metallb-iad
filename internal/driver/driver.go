@@ -16,8 +16,8 @@ limitations under the License.
 
 // Package driver holds the MetalLB-specific half of the IP Allocation
 // Driver: the provisioner identity, class-parameter parsing, and the
-// address allocator. The controllers in internal/controller wire it to the
-// cluster.
+// placeholder-Service reservation mechanics. The controllers in
+// internal/controller wire it to the cluster.
 package driver
 
 import (
@@ -26,7 +26,10 @@ import (
 	"net/netip"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 
 	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
 )
@@ -37,9 +40,8 @@ const (
 	ProvisionerName = "metallb.drivers.local.sdn.cozystack.io"
 
 	// TeardownFinalizer is placed on every IPAddress this driver creates.
-	// MetalLB has no per-address backend object to deallocate, so teardown
-	// only withdraws a live pin, but the finalizer keeps the contract shape
-	// every driver must have.
+	// Teardown deletes the placeholder Service holding the reservation and
+	// withdraws any live pin.
 	TeardownFinalizer = "metallb.drivers.local.sdn.cozystack.io/teardown"
 
 	// PinnedAnnotation marks a Service whose MetalLB pin annotation was
@@ -48,12 +50,32 @@ const (
 
 	// MetalLBPinAnnotation is MetalLB's "use exactly these addresses" hook.
 	MetalLBPinAnnotation = "metallb.io/loadBalancerIPs"
+
+	// MetalLBPoolAnnotation names the pool a Service draws from; it is how
+	// placeholders reach the reserved autoAssign:false pool.
+	MetalLBPoolAnnotation = "metallb.io/address-pool"
+
+	// PlaceholderLabel marks a Service as one of this driver's reservation
+	// placeholders. Only honoured on Services in the driver's placeholder
+	// namespace, which tenants cannot write to.
+	PlaceholderLabel = ProvisionerName + "/placeholder"
+
+	// PlaceholderAddressLabel links a placeholder to the IPAddress object
+	// whose reservation it holds. Set once the allocation is observed.
+	PlaceholderAddressLabel = ProvisionerName + "/ip-address"
+
+	// PlaceholderClaimNamespaceAnnotation / PlaceholderClaimNameAnnotation
+	// record, on an allocation placeholder, which claim it is allocating
+	// for — annotations, not labels, because object names may exceed label
+	// value limits.
+	PlaceholderClaimNamespaceAnnotation = ProvisionerName + "/claim-namespace"
+	PlaceholderClaimNameAnnotation      = ProvisionerName + "/claim-name"
 )
 
 // ClassParameters is this driver's interpretation of the opaque
 // IPAddressClass.spec.parameters blob.
 type ClassParameters struct {
-	// Addresses are the CIDRs the class carves addresses from.
+	// Addresses are the CIDRs the class's MetalLB pool covers.
 	Addresses []string `json:"addresses"`
 }
 
@@ -77,6 +99,12 @@ func ParseClassParameters(raw *runtime.RawExtension) (ClassParameters, error) {
 	return params, nil
 }
 
+// PoolName is the deterministic name of the MetalLB objects rendered for a
+// class.
+func PoolName(className string) string {
+	return "iad-" + className
+}
+
 // FamilyOf reports the concrete address family of an IP, or "" if it does
 // not parse.
 func FamilyOf(address string) localv1alpha1.AddressFamily {
@@ -90,54 +118,70 @@ func FamilyOf(address string) localv1alpha1.AddressFamily {
 	return localv1alpha1.FamilyIPv6
 }
 
-// Allocate carves the first free address of the wanted family from the
-// class's ranges. IPv4 network and broadcast addresses are never handed
-// out. inUse holds every address already backed by an IPAddress object,
-// regardless of class — one IP must never be represented twice.
-func Allocate(params ClassParameters, family localv1alpha1.AddressFamily, inUse map[netip.Addr]bool) (netip.Addr, error) {
-	for _, cidr := range params.Addresses {
-		prefix, err := netip.ParsePrefix(cidr)
-		if err != nil {
-			return netip.Addr{}, fmt.Errorf("class parameter address %q: %w", cidr, err)
-		}
-		prefix = prefix.Masked()
-		if prefixFamily(prefix) != family {
-			continue
-		}
-		for addr := prefix.Addr(); prefix.Contains(addr); addr = addr.Next() {
-			if isReservedV4(prefix, addr) || inUse[addr] {
-				continue
-			}
-			return addr, nil
-		}
-	}
-	return netip.Addr{}, fmt.Errorf("no free %s address in class ranges %v", family, params.Addresses)
-}
-
-func prefixFamily(prefix netip.Prefix) localv1alpha1.AddressFamily {
-	if prefix.Addr().Is4() || prefix.Addr().Is4In6() {
-		return localv1alpha1.FamilyIPv4
-	}
-	return localv1alpha1.FamilyIPv6
-}
-
-// isReservedV4 reports whether addr is the network or broadcast address of
-// an IPv4 prefix wider than /31.
-func isReservedV4(prefix netip.Prefix, addr netip.Addr) bool {
-	if !addr.Is4() || prefix.Bits() >= 31 {
-		return false
-	}
-	if addr == prefix.Addr() {
-		return true
-	}
-	return !prefix.Contains(addr.Next())
-}
-
 // AddressObjectName derives the conventional IPAddress object name for an
 // IP, e.g. "ip-203-0-113-7" or "ip-2001-db8--7".
 func AddressObjectName(address string) string {
 	name := strings.NewReplacer(".", "-", ":", "-").Replace(address)
 	return "ip-" + name
+}
+
+// AllocationPlaceholderName is the deterministic name of the placeholder
+// that allocates one family for one claim — deterministic so racing
+// reconciles collide on create instead of double-allocating.
+func AllocationPlaceholderName(claimUID types.UID, family localv1alpha1.AddressFamily) string {
+	suffix := "v4"
+	if family == localv1alpha1.FamilyIPv6 {
+		suffix = "v6"
+	}
+	return "iad-" + string(claimUID) + "-" + suffix
+}
+
+// HoldPlaceholderName is the deterministic name of a placeholder recreated
+// to re-hold an existing address after disassociation.
+func HoldPlaceholderName(addressName string) string {
+	return "iad-" + addressName
+}
+
+// NewPlaceholder builds a reservation placeholder: a selectorless
+// LoadBalancer Service that MetalLB assigns an address to but — having no
+// endpoints — never announces. pinIP empty means "allocate from the
+// class's pool"; non-empty pins the placeholder to re-hold that exact
+// address.
+func NewPlaceholder(name, namespace, className string, family localv1alpha1.AddressFamily, pinIP string) *corev1.Service {
+	ipFamily := corev1.IPv4Protocol
+	if family == localv1alpha1.FamilyIPv6 {
+		ipFamily = corev1.IPv6Protocol
+	}
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+			Labels:    map[string]string{PlaceholderLabel: "true"},
+			Annotations: map[string]string{
+				MetalLBPoolAnnotation: PoolName(className),
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:                          corev1.ServiceTypeLoadBalancer,
+			Ports:                         []corev1.ServicePort{{Name: "placeholder", Port: 65535, Protocol: corev1.ProtocolTCP}},
+			AllocateLoadBalancerNodePorts: new(false),
+			IPFamilyPolicy:                new(corev1.IPFamilyPolicySingleStack),
+			IPFamilies:                    []corev1.IPFamily{ipFamily},
+		},
+	}
+	if pinIP != "" {
+		svc.Annotations[MetalLBPinAnnotation] = pinIP
+		svc.Labels[PlaceholderAddressLabel] = AddressObjectName(pinIP)
+	}
+	return svc
+}
+
+// IsPlaceholder reports whether a Service is one of this driver's
+// reservation placeholders. Callers must additionally check the namespace
+// against the configured placeholder namespace — the label alone is
+// forgeable by anyone who can create Services.
+func IsPlaceholder(svc *corev1.Service) bool {
+	return svc.Labels[PlaceholderLabel] == "true"
 }
 
 // RequestedFamilies expands a claim's family into the concrete families it

@@ -79,7 +79,7 @@ func (r *ClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	poolName := "iad-" + class.Name
+	poolName := driver.PoolName(class.Name)
 
 	pool := &unstructured.Unstructured{}
 	pool.SetGroupVersionKind(ipAddressPoolGVK)

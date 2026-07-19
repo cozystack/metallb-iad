@@ -65,9 +65,12 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var metallbNamespace string
+	var placeholderNamespace string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metallbNamespace, "metallb-namespace", "metallb-system",
 		"The namespace MetalLB reads its configuration resources from.")
+	flag.StringVar(&placeholderNamespace, "placeholder-namespace", "metallb-iad-system",
+		"The namespace reservation placeholder Services are created in. Tenants must have no write access to it.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -212,9 +215,10 @@ func main() {
 	}
 
 	if err = (&controller.ClaimReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("iad-claim-controller"),
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		Recorder:             mgr.GetEventRecorderFor("iad-claim-controller"),
+		PlaceholderNamespace: placeholderNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Claim")
 		os.Exit(1)
@@ -229,17 +233,19 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.ServiceReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("iad-service-controller"),
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		Recorder:             mgr.GetEventRecorderFor("iad-service-controller"),
+		PlaceholderNamespace: placeholderNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Service")
 		os.Exit(1)
 	}
 	if err = (&controller.IPAddressReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("iad-ipaddress-controller"),
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		Recorder:             mgr.GetEventRecorderFor("iad-ipaddress-controller"),
+		PlaceholderNamespace: placeholderNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "IPAddress")
 		os.Exit(1)

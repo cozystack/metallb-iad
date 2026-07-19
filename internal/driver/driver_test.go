@@ -17,71 +17,13 @@ limitations under the License.
 package driver
 
 import (
-	"net/netip"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
 )
-
-func params(t *testing.T, cidrs ...string) ClassParameters {
-	t.Helper()
-	return ClassParameters{Addresses: cidrs}
-}
-
-func TestAllocateSkipsNetworkAndBroadcast(t *testing.T) {
-	got, err := Allocate(params(t, "203.0.113.0/30"), localv1alpha1.FamilyIPv4, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.String() != "203.0.113.1" {
-		t.Errorf("first allocation = %s, want 203.0.113.1 (network address skipped)", got)
-	}
-}
-
-func TestAllocateSkipsInUse(t *testing.T) {
-	inUse := map[netip.Addr]bool{netip.MustParseAddr("203.0.113.1"): true}
-	got, err := Allocate(params(t, "203.0.113.0/30"), localv1alpha1.FamilyIPv4, inUse)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.String() != "203.0.113.2" {
-		t.Errorf("allocation = %s, want 203.0.113.2", got)
-	}
-}
-
-func TestAllocateExhaustion(t *testing.T) {
-	inUse := map[netip.Addr]bool{
-		netip.MustParseAddr("203.0.113.1"): true,
-		netip.MustParseAddr("203.0.113.2"): true,
-	}
-	// /30 has exactly two usable hosts; both are taken.
-	if _, err := Allocate(params(t, "203.0.113.0/30"), localv1alpha1.FamilyIPv4, inUse); err == nil {
-		t.Error("expected exhaustion error, got success")
-	}
-}
-
-func TestAllocatePicksMatchingFamily(t *testing.T) {
-	p := params(t, "203.0.113.0/30", "2001:db8::/126")
-	got, err := Allocate(p, localv1alpha1.FamilyIPv6, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.Is6() || got.Is4In6() {
-		t.Errorf("allocation = %s, want an IPv6 address", got)
-	}
-}
-
-func TestAllocateSlash32(t *testing.T) {
-	got, err := Allocate(params(t, "203.0.113.9/32"), localv1alpha1.FamilyIPv4, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.String() != "203.0.113.9" {
-		t.Errorf("allocation = %s, want the /32 itself", got)
-	}
-}
 
 func TestParseClassParameters(t *testing.T) {
 	good := &runtime.RawExtension{Raw: []byte(`{"addresses":["203.0.113.0/24"]}`)}
@@ -110,5 +52,51 @@ func TestAddressObjectName(t *testing.T) {
 		if got := AddressObjectName(in); got != want {
 			t.Errorf("AddressObjectName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestNewPlaceholderForAllocation(t *testing.T) {
+	svc := NewPlaceholder("iad-uid-v4", "iad-ns", "public", localv1alpha1.FamilyIPv4, "")
+	if svc.Annotations[MetalLBPoolAnnotation] != "iad-public" {
+		t.Errorf("pool annotation = %q", svc.Annotations[MetalLBPoolAnnotation])
+	}
+	if _, pinned := svc.Annotations[MetalLBPinAnnotation]; pinned {
+		t.Error("allocation placeholder must not be pinned; MetalLB chooses the address")
+	}
+	if !IsPlaceholder(svc) {
+		t.Error("placeholder label missing")
+	}
+	if svc.Spec.Selector != nil {
+		t.Error("placeholder must be selectorless so it has no endpoints and is never announced")
+	}
+	if svc.Spec.AllocateLoadBalancerNodePorts == nil || *svc.Spec.AllocateLoadBalancerNodePorts {
+		t.Error("placeholder must not consume node ports")
+	}
+	if len(svc.Spec.IPFamilies) != 1 || svc.Spec.IPFamilies[0] != corev1.IPv4Protocol {
+		t.Errorf("ipFamilies = %v, want [IPv4]", svc.Spec.IPFamilies)
+	}
+}
+
+func TestNewPlaceholderForHold(t *testing.T) {
+	svc := NewPlaceholder("iad-ip-2001-db8--7", "iad-ns", "public", localv1alpha1.FamilyIPv6, "2001:db8::7")
+	if svc.Annotations[MetalLBPinAnnotation] != "2001:db8::7" {
+		t.Errorf("pin annotation = %q, want the held address", svc.Annotations[MetalLBPinAnnotation])
+	}
+	if svc.Labels[PlaceholderAddressLabel] != "ip-2001-db8--7" {
+		t.Errorf("address label = %q", svc.Labels[PlaceholderAddressLabel])
+	}
+	if len(svc.Spec.IPFamilies) != 1 || svc.Spec.IPFamilies[0] != corev1.IPv6Protocol {
+		t.Errorf("ipFamilies = %v, want [IPv6]", svc.Spec.IPFamilies)
+	}
+}
+
+func TestPlaceholderNames(t *testing.T) {
+	v4 := AllocationPlaceholderName("abc-123", localv1alpha1.FamilyIPv4)
+	v6 := AllocationPlaceholderName("abc-123", localv1alpha1.FamilyIPv6)
+	if v4 == v6 {
+		t.Error("per-family allocation placeholders must not collide")
+	}
+	if got := HoldPlaceholderName("ip-203-0-113-7"); got != "iad-ip-203-0-113-7" {
+		t.Errorf("HoldPlaceholderName = %q", got)
 	}
 }

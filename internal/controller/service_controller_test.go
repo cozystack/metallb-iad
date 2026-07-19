@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -29,6 +30,15 @@ import (
 	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
 	"github.com/lllamnyp/metallb-iad/internal/driver"
 )
+
+func serviceRec(c client.Client) *ServiceReconciler {
+	return &ServiceReconciler{
+		Client:               c,
+		Scheme:               c.Scheme(),
+		Recorder:             record.NewFakeRecorder(100),
+		PlaceholderNamespace: testPlaceholderNS,
+	}
+}
 
 func boundClaimWithAddress() (*localv1alpha1.IPAddressClaim, *localv1alpha1.IPAddress) {
 	claim := stampedClaim(localv1alpha1.FamilyIPv4)
@@ -45,6 +55,13 @@ func boundClaimWithAddress() (*localv1alpha1.IPAddressClaim, *localv1alpha1.IPAd
 		Status: localv1alpha1.IPAddressStatus{Phase: localv1alpha1.IPAddressBound},
 	}
 	return claim, addr
+}
+
+// holdPlaceholderFor builds the placeholder that holds the given address.
+func holdPlaceholderFor(addr *localv1alpha1.IPAddress) *corev1.Service {
+	return driver.NewPlaceholder(
+		driver.HoldPlaceholderName(addr.Name), testPlaceholderNS,
+		addr.Spec.ClassName, driver.FamilyOf(addr.Spec.Address), addr.Spec.Address)
 }
 
 func lbService(name string, annotations map[string]string) *corev1.Service {
@@ -72,12 +89,12 @@ func getAddr(t *testing.T, c client.Client, name string) *localv1alpha1.IPAddres
 	return addr
 }
 
-func TestAssociatePinsServiceAndRecordsAssociation(t *testing.T) {
+func TestAssociateHandsOffFromPlaceholderToService(t *testing.T) {
 	claim, addr := boundClaimWithAddress()
+	hold := holdPlaceholderFor(addr)
 	svc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
-	c := testClient(t, claim, addr, svc)
-	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
-	reconcileOnce(t, r, "tenant-a", "web-lb")
+	c := testClient(t, claim, addr, hold, svc)
+	reconcileOnce(t, serviceRec(c), "tenant-a", "web-lb")
 
 	got := getService(t, c, "web-lb")
 	if pin := got.Annotations[driver.MetalLBPinAnnotation]; pin != "203.0.113.1" {
@@ -90,6 +107,12 @@ func TestAssociatePinsServiceAndRecordsAssociation(t *testing.T) {
 	if holder == nil || holder.Kind != "Service" || holder.Name != "web-lb" || holder.Namespace != "tenant-a" {
 		t.Errorf("associatedTo = %+v", holder)
 	}
+	// The gap handoff released the hold: the placeholder must be gone so
+	// MetalLB can assign the address to the real Service.
+	err := c.Get(context.Background(), types.NamespacedName{Namespace: testPlaceholderNS, Name: hold.Name}, &corev1.Service{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("hold placeholder still present after association: %v", err)
+	}
 }
 
 func TestSecondServiceIsRejected(t *testing.T) {
@@ -100,8 +123,7 @@ func TestSecondServiceIsRejected(t *testing.T) {
 	holderSvc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
 	thief := lbService("thief", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
 	c := testClient(t, claim, addr, holderSvc, thief)
-	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
-	reconcileOnce(t, r, "tenant-a", "thief")
+	reconcileOnce(t, serviceRec(c), "tenant-a", "thief")
 
 	got := getService(t, c, "thief")
 	if _, pinned := got.Annotations[driver.MetalLBPinAnnotation]; pinned {
@@ -122,8 +144,7 @@ func TestReassociationAfterHolderDeleted(t *testing.T) {
 	}
 	newSvc := lbService("new-vm", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
 	c := testClient(t, claim, addr, newSvc)
-	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
-	reconcileOnce(t, r, "tenant-a", "new-vm")
+	reconcileOnce(t, serviceRec(c), "tenant-a", "new-vm")
 
 	got := getService(t, c, "new-vm")
 	if pin := got.Annotations[driver.MetalLBPinAnnotation]; pin != "203.0.113.1" {
@@ -145,8 +166,7 @@ func TestRemovingClaimAnnotationWithdrawsPin(t *testing.T) {
 		driver.PinnedAnnotation:     "true",
 	})
 	c := testClient(t, claim, addr, svc)
-	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
-	reconcileOnce(t, r, "tenant-a", "web-lb")
+	reconcileOnce(t, serviceRec(c), "tenant-a", "web-lb")
 
 	got := getService(t, c, "web-lb")
 	if _, still := got.Annotations[driver.MetalLBPinAnnotation]; still {
@@ -168,8 +188,7 @@ func TestHandWrittenPinIsNeverRemoved(t *testing.T) {
 		driver.MetalLBPinAnnotation: "198.51.100.9",
 	})
 	c := testClient(t, svc)
-	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
-	reconcileOnce(t, r, "tenant-a", "hand-pinned")
+	reconcileOnce(t, serviceRec(c), "tenant-a", "hand-pinned")
 
 	got := getService(t, c, "hand-pinned")
 	if got.Annotations[driver.MetalLBPinAnnotation] != "198.51.100.9" {
@@ -184,11 +203,24 @@ func TestWrongfulAssignmentDrivesConflict(t *testing.T) {
 	thief := lbService("thief", nil)
 	thief.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.1"}}
 	c := testClient(t, claim, addr, thief)
-	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
-	reconcileOnce(t, r, "tenant-a", "thief")
+	reconcileOnce(t, serviceRec(c), "tenant-a", "thief")
 
 	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase != localv1alpha1.IPAddressConflict {
 		t.Errorf("phase = %q, want Conflict", got.Status.Phase)
+	}
+}
+
+func TestPlaceholderIsNotAConflict(t *testing.T) {
+	// The driver's own hold placeholder legitimately holds the address of
+	// an unassociated reservation; reconciling it must not flag Conflict.
+	_, addr := boundClaimWithAddress()
+	hold := holdPlaceholderFor(addr)
+	hold.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.1"}}
+	c := testClient(t, addr, hold)
+	reconcileOnce(t, serviceRec(c), testPlaceholderNS, hold.Name)
+
+	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase == localv1alpha1.IPAddressConflict {
+		t.Error("the driver's own placeholder was flagged as a conflict")
 	}
 }
 
@@ -198,10 +230,8 @@ func TestUntrackedAssignmentIsLeftAlone(t *testing.T) {
 	svc := lbService("plain", nil)
 	svc.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "198.51.100.7"}}
 	c := testClient(t, svc)
-	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
-	reconcileOnce(t, r, "tenant-a", "plain")
-	// Nothing to assert beyond "no error and no objects mutated": the
-	// ledger is empty.
+	reconcileOnce(t, serviceRec(c), "tenant-a", "plain")
+
 	if addrs := listAddresses(t, c); len(addrs) != 0 {
 		t.Errorf("unexpected IPAddress objects: %v", addrs)
 	}

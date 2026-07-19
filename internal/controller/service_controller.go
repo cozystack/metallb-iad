@@ -49,6 +49,8 @@ type ServiceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// PlaceholderNamespace is where reservation placeholders live.
+	PlaceholderNamespace string
 }
 
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;update;patch
@@ -62,6 +64,12 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	svc := &corev1.Service{}
 	if err := r.Get(ctx, req.NamespacedName, svc); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// The driver's own reservation placeholders are not workloads; the
+	// claim and address controllers manage them.
+	if svc.Namespace == r.PlaceholderNamespace && driver.IsPlaceholder(svc) {
+		return ctrl.Result{}, nil
 	}
 
 	if !svc.DeletionTimestamp.IsZero() {
@@ -143,21 +151,13 @@ func (r *ServiceReconciler) associate(ctx context.Context, svc *corev1.Service, 
 	}
 	sortByFamily(ips)
 
-	pin := strings.Join(ips, ",")
-	if svc.Annotations[driver.MetalLBPinAnnotation] != pin ||
-		svc.Annotations[driver.PinnedAnnotation] != "true" {
-		if svc.Annotations == nil {
-			svc.Annotations = map[string]string{}
-		}
-		svc.Annotations[driver.MetalLBPinAnnotation] = pin
-		svc.Annotations[driver.PinnedAnnotation] = "true"
-		if err := r.Update(ctx, svc); err != nil {
-			return err
-		}
-		r.Recorder.Eventf(svc, "Normal", "Associated",
-			"pinned %s from IPAddressClaim %q", pin, claimName)
-	}
-
+	// Gap handoff, in an order every step of which re-converges after a
+	// crash: (1) record the association in the ledger — this is what stops
+	// the address controller from re-arming the hold; (2) release the hold
+	// placeholders, freeing the address in MetalLB's books; (3) pin the
+	// real Service so MetalLB assigns the address to it. Between (2) and
+	// (3) the address is briefly unheld — the gap — guarded only by
+	// autoAssign:false, admission, and conflict detection.
 	for _, name := range addrNames {
 		addr := &localv1alpha1.IPAddress{}
 		if err := r.Get(ctx, types.NamespacedName{Name: name}, addr); err != nil {
@@ -172,8 +172,42 @@ func (r *ServiceReconciler) associate(ctx context.Context, svc *corev1.Service, 
 				return err
 			}
 		}
+		if err := r.deletePlaceholders(ctx, name); err != nil {
+			return err
+		}
+	}
+
+	pin := strings.Join(ips, ",")
+	if svc.Annotations[driver.MetalLBPinAnnotation] != pin ||
+		svc.Annotations[driver.PinnedAnnotation] != "true" {
+		if svc.Annotations == nil {
+			svc.Annotations = map[string]string{}
+		}
+		svc.Annotations[driver.MetalLBPinAnnotation] = pin
+		svc.Annotations[driver.PinnedAnnotation] = "true"
+		if err := r.Update(ctx, svc); err != nil {
+			return err
+		}
+		r.Recorder.Eventf(svc, "Normal", "Associated",
+			"pinned %s from IPAddressClaim %q", pin, claimName)
 	}
 	logger.V(1).Info("associated", "service", client.ObjectKeyFromObject(svc), "ips", pin)
+	return nil
+}
+
+// deletePlaceholders releases the hold placeholders linked to an address.
+func (r *ServiceReconciler) deletePlaceholders(ctx context.Context, addressName string) error {
+	services := &corev1.ServiceList{}
+	if err := r.List(ctx, services,
+		client.InNamespace(r.PlaceholderNamespace),
+		client.MatchingLabels{driver.PlaceholderAddressLabel: addressName}); err != nil {
+		return err
+	}
+	for i := range services.Items {
+		if err := r.Delete(ctx, &services.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -286,6 +320,32 @@ func sortByFamily(ips []string) {
 	})
 }
 
+// servicesForAddress requeues the Services an address change may affect:
+// the associated Service (re-drives a pin left unwritten by a partial
+// handoff) and the Services referencing the bound claim.
+func (r *ServiceReconciler) servicesForAddress(ctx context.Context, o client.Object) []reconcile.Request {
+	addr := o.(*localv1alpha1.IPAddress)
+	var reqs []reconcile.Request
+	if holder := addr.Status.AssociatedTo; holder != nil && holder.Kind == "Service" {
+		reqs = append(reqs, reconcile.Request{
+			NamespacedName: types.NamespacedName{Namespace: holder.Namespace, Name: holder.Name},
+		})
+	}
+	if ref := addr.Spec.ClaimRef; ref != nil {
+		services := &corev1.ServiceList{}
+		if err := r.List(ctx, services, client.InNamespace(ref.Namespace)); err == nil {
+			for _, svc := range services.Items {
+				if svc.Annotations[localv1alpha1.ServiceClaimAnnotation] == ref.Name {
+					reqs = append(reqs, reconcile.Request{
+						NamespacedName: types.NamespacedName{Namespace: svc.Namespace, Name: svc.Name},
+					})
+				}
+			}
+		}
+	}
+	return reqs
+}
+
 // servicesForClaim requeues the Services in the claim's namespace that
 // reference it, so claim binding progress propagates to the pin.
 func (r *ServiceReconciler) servicesForClaim(ctx context.Context, o client.Object) []reconcile.Request {
@@ -309,6 +369,7 @@ func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Service{}).
 		Watches(&localv1alpha1.IPAddressClaim{}, handler.EnqueueRequestsFromMapFunc(r.servicesForClaim)).
+		Watches(&localv1alpha1.IPAddress{}, handler.EnqueueRequestsFromMapFunc(r.servicesForAddress)).
 		Named("iad-service").
 		Complete(r)
 }
