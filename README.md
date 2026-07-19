@@ -10,6 +10,11 @@ backend: it reserves and attaches IPs that are ultimately announced by
 MetalLB. The core controller owns the generic claim–address lifecycle; this
 driver owns everything MetalLB-shaped.
 
+**The high-level algorithms — provisioning, backend rendering, association,
+conflict handling — are recorded in [docs/design.md](docs/design.md)**,
+written against the core's contract
+([address-controller docs/design.md](https://github.com/lllamnyp/address-controller/blob/feat/core-controller/docs/design.md)).
+
 ## What it does
 
 An `IPAddressClass` opts into this driver by naming it:
