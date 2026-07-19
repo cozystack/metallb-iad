@@ -97,8 +97,9 @@ func TestSecondServiceIsRejected(t *testing.T) {
 	addr.Status.AssociatedTo = &localv1alpha1.AssociationReference{
 		Kind: "Service", Namespace: "tenant-a", Name: "web-lb",
 	}
+	holderSvc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
 	thief := lbService("thief", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
-	c := testClient(t, claim, addr, thief)
+	c := testClient(t, claim, addr, holderSvc, thief)
 	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
 	reconcileOnce(t, r, "tenant-a", "thief")
 
@@ -109,6 +110,28 @@ func TestSecondServiceIsRejected(t *testing.T) {
 	holder := getAddr(t, c, "ip-203-0-113-1").Status.AssociatedTo
 	if holder == nil || holder.Name != "web-lb" {
 		t.Errorf("associatedTo = %+v, want unchanged web-lb", holder)
+	}
+}
+
+func TestReassociationAfterHolderDeleted(t *testing.T) {
+	// The cutover flow: the old workload's Service is gone (its deletion
+	// event may have been missed), and the claim is attached to a new one.
+	claim, addr := boundClaimWithAddress()
+	addr.Status.AssociatedTo = &localv1alpha1.AssociationReference{
+		Kind: "Service", Namespace: "tenant-a", Name: "old-vm",
+	}
+	newSvc := lbService("new-vm", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
+	c := testClient(t, claim, addr, newSvc)
+	r := &ServiceReconciler{Client: c, Scheme: c.Scheme(), Recorder: record.NewFakeRecorder(100)}
+	reconcileOnce(t, r, "tenant-a", "new-vm")
+
+	got := getService(t, c, "new-vm")
+	if pin := got.Annotations[driver.MetalLBPinAnnotation]; pin != "203.0.113.1" {
+		t.Errorf("pin = %q, want the same address back on the new workload", pin)
+	}
+	holder := getAddr(t, c, "ip-203-0-113-1").Status.AssociatedTo
+	if holder == nil || holder.Name != "new-vm" {
+		t.Errorf("associatedTo = %+v, want taken over by new-vm", holder)
 	}
 }
 

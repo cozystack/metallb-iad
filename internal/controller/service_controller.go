@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -119,10 +120,20 @@ func (r *ServiceReconciler) associate(ctx context.Context, svc *corev1.Service, 
 		}
 		if holder := addr.Status.AssociatedTo; holder != nil &&
 			(holder.Namespace != svc.Namespace || holder.Name != svc.Name) {
-			r.Recorder.Eventf(svc, "Warning", "AssociationRejected",
-				"IPAddressClaim %q is already associated to Service %s/%s",
-				claimName, holder.Namespace, holder.Name)
-			return nil
+			// A live holder makes this a rejected second association. A
+			// holder that no longer exists is a stale record (its deletion
+			// event may have been missed) and must not wedge the cutover
+			// flow — fall through and take the association over.
+			live, err := r.holderExists(ctx, holder)
+			if err != nil {
+				return err
+			}
+			if live {
+				r.Recorder.Eventf(svc, "Warning", "AssociationRejected",
+					"IPAddressClaim %q is already associated to Service %s/%s",
+					claimName, holder.Namespace, holder.Name)
+				return nil
+			}
 		}
 		ips = append(ips, bound.Address)
 		addrNames = append(addrNames, bound.Name)
@@ -164,6 +175,23 @@ func (r *ServiceReconciler) associate(ctx context.Context, svc *corev1.Service, 
 	}
 	logger.V(1).Info("associated", "service", client.ObjectKeyFromObject(svc), "ips", pin)
 	return nil
+}
+
+// holderExists reports whether the Service an association points at is
+// still alive.
+func (r *ServiceReconciler) holderExists(ctx context.Context, holder *localv1alpha1.AssociationReference) (bool, error) {
+	if holder.Kind != "Service" {
+		return true, nil // unknown holder kinds are treated as live, conservatively
+	}
+	svc := &corev1.Service{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: holder.Namespace, Name: holder.Name}, svc)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return svc.DeletionTimestamp.IsZero(), nil
 }
 
 // unpin removes a pin this driver wrote (never a hand-written one) and
