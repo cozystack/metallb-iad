@@ -5,7 +5,7 @@ go 1.26
 godebug default=go1.23
 
 require (
-	github.com/lllamnyp/address-controller v0.0.0-20260718221506-0c590f52039c
+	github.com/lllamnyp/address-controller v0.0.0-20260720210012-ac627902edfd
 	github.com/onsi/ginkgo/v2 v2.21.0
 	github.com/onsi/gomega v1.35.1
 	k8s.io/api v0.32.0
