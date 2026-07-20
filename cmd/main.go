@@ -55,6 +55,10 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+// Leader election writes Leases (and emits Events, covered by the controllers'
+// own markers); grant it here so the generated role tracks the flag's needs.
+// +kubebuilder:rbac:groups=coordination.k8s.io,resources=leases,verbs=get;list;watch;create;update;patch;delete
+
 // nolint:gocyclo
 func main() {
 	var metricsAddr string

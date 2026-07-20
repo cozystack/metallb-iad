@@ -67,19 +67,38 @@ Four controllers implement the driver side of the contract:
   MetalLB allocation — and withdraw any pin), and recovers `Conflict`
   once no Service wrongfully holds the address.
 
-## Building
+## Installing
 
-The address-controller dependency is a private repo, so:
+Packaged as a Helm chart at [`chart/metallb-iad`](chart/metallb-iad) (no
+kustomize). The CRDs belong to the
+[address-controller](https://github.com/lllamnyp/address-controller) chart —
+install that first. The driver's ClusterRole
+(`chart/metallb-iad/templates/role.yaml`) is controller-gen output written by
+`make manifests`, never edited by hand.
 
 ```sh
-GOPRIVATE=github.com/lllamnyp go build ./...
-go test ./internal/...
+helm upgrade --install metallb-iad chart/metallb-iad \
+  --namespace metallb-iad-system --create-namespace
 ```
 
-Run with `--metallb-namespace` if MetalLB does not live in
-`metallb-system`, and `--placeholder-namespace` to choose where
-reservation placeholders live (default `metallb-iad-system`; tenants must
-have no write access to it).
+Set `metallbNamespace` if MetalLB does not live in `metallb-system`.
+Reservation placeholders live in the release namespace by default; set
+`placeholderNamespace` to put them elsewhere (the chart then creates that
+namespace). Tenants must have no write access to it — a Service carrying the
+placeholder label is exempt from conflict detection only inside that
+namespace.
+
+The driver image is published as `ghcr.io/lllamnyp/metallb-iad:main` (plus
+`main-<sha>` and semver tags) by the release workflow on every push to main.
+
+## Building
+
+```sh
+make build                      # vet + build the driver binary
+go test ./internal/...
+make docker-build docker-push   # publish ghcr.io/lllamnyp/metallb-iad:<git-sha>
+make helm-package               # lint and package the chart into dist/
+```
 
 ## Not implemented (deliberately, for now)
 
