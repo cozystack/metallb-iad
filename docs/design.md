@@ -179,6 +179,18 @@ the holding invariant, which recreates a placeholder pinned to the
 address. The address stays `Bound` to its claim throughout: reserved,
 attached to nothing.
 
+One MetalLB semantic makes this mirror asymmetric in practice (observed
+on a live cluster): withdrawing the pin does *not* make MetalLB revoke
+the Service's existing assignment — assignments are sticky, and
+`autoAssign: false` only gates *new* allocation. Until the ex-holder
+Service is deleted (or mutated off the IP), it keeps announcing the
+address, the recreated hold placeholder sits Pending, and conflict
+detection (§6) flags the address `Conflict` with the ex-holder as the
+offender. That is loud and safe — the address cannot be double-assigned,
+and deleting the ex-holder clears the conflict and completes the re-hold
+— but it means annotation removal alone does not return the address to
+a *held* reservation; the Service's own lifecycle does.
+
 **The flagship flow** — claim → bound address, held by a placeholder →
 annotate Service A → handoff, A announces → delete A → stale association
 cleared, placeholder re-holds → annotate Service B → handoff, the *same*
