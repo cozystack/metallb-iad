@@ -41,7 +41,7 @@ try "kubectl -n $NS get events --field-selector involvedObject.name=web | tail"
 
 note "the placeholder is gone — the workload holds the address in MetalLB's books now:"
 try "kubectl -n $IAD_NS get svc"
-try "kubectl get $IP   # associatedTo names the Service"
+try "kubectl get $IP   # ATTACHEDTO: web"
 
 note "and it serves (from inside the cluster; the demo range isn't routed outside):"
 try "kubectl -n $NS exec deploy/web -- wget -qO- http://$WEBIP | head -4"

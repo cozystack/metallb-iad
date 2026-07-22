@@ -24,6 +24,8 @@ banner() { printf '\n%s== %s ==%s\n' "$MAGENTA" "$*" "$OFF"; }
 note()   { printf '%s  » %s%s\n' "$CYAN" "$*" "$OFF"; }
 try()    { printf '%s        %s%s\n' "$YELLOW" "$*" "$OFF"; }  # a command for YOU, the presenter
 plain()  { printf '        %s\n' "$*"; }
+# Hold the stage until the presenter is done looking; no-op when scripted.
+pause()  { if [ -t 0 ]; then echo; read -r -p "        [Enter: ${*:-continue}]"; echo; fi; }
 
 claimip()   { kubectl -n "$NS" get "$IPC" "$1" -o jsonpath='{.status.addresses[0].address}'; }
 addrname()  { kubectl -n "$NS" get "$IPC" "$1" -o jsonpath='{.status.addresses[0].name}'; }
