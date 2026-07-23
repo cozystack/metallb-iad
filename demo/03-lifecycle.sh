@@ -13,10 +13,13 @@ wait_for 60 kubectl -n "$IAD_NS" get svc \
   -l "metallb.drivers.local.sdn.cozystack.io/ip-address=$(addrname web)" -o name >/dev/null \
   || { echo "hold placeholder never came back"; exit 1; }
 
-note "the driver noticed the stale association and re-armed the hold — look:"
-try "kubectl -n $NS get svc              # no LoadBalancer Service left"
-try "kubectl get $IP   # still Bound to $NS/web, ATTACHEDTO empty again"
-try "kubectl -n $IAD_NS get svc   # a placeholder holds $WEBIP again"
+note "released, but not lost. deleting the holder freed the address in MetalLB's"
+note "books — for a moment it belonged to nobody. The driver noticed the stale"
+note "attachment, cleared it, and immediately re-manufactured the hold: a fresh"
+note "placeholder pinned to $WEBIP. Back to a backend-enforced reservation:"
+show "kubectl -n $NS get svc"
+show "kubectl get $IP   # still Bound to its claim, ATTACHEDTO empty again"
+show "kubectl -n $IAD_NS get svc"
 note "deleting a workload NEVER releases the address — its lifetime belongs to the claim."
 pause "bring up the successor Service (web2)"
 
@@ -25,6 +28,6 @@ wait_for 60 sh -c "[ \"\$(kubectl -n $NS get svc web2 -o jsonpath='{.status.load
   || { echo "web2 never got $WEBIP"; exit 1; }
 
 note "a NEW Service (web2) with the same annotation — and the SAME address comes back:"
-try "kubectl -n $NS get svc web2"
-try "kubectl get $IP   # ATTACHEDTO: web2"
+show "kubectl -n $NS get svc web2"
+show "kubectl get $IP"
 note "this is what makes the IP DNS-safe: workloads are cattle, the address is infrastructure."

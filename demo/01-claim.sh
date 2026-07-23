@@ -18,7 +18,7 @@ spec:
 EOF
 
 note "one class = one MetalLB pool (autoAssign: false — nobody draws from it by accident):"
-try "kubectl -n $METALLB_NS get ipaddresspools,l2advertisements"
+show "kubectl -n $METALLB_NS get ipaddresspools,l2advertisements"
 
 kubectl create ns "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 kubectl apply -f - >/dev/null <<EOF
@@ -32,13 +32,13 @@ note "the claim names no class — the default-class annotation resolves it."
 wait_bound web
 WEBIP=$(claimip web)
 
-note "what exists now:"
-plain "claim  $NS/web        Bound   $WEBIP"
-plain "ledger $(addrname web)   Bound to $NS/web, reclaim Delete"
-try "kubectl -n $NS get $IPC"
-try "kubectl get $IP"
-
-note "the reservation is REAL in the backend — MetalLB assigned it to a placeholder:"
-try "kubectl -n $IAD_NS get svc"
-note "selectorless, no endpoints: held in MetalLB's books, silent on the wire."
+note "how the reservation was made: the driver never picks an address itself."
+note "it created a placeholder Service in $IAD_NS drawing from the class pool,"
+note "MetalLB — the allocator of record — assigned one, and the driver recorded"
+note "the observed result as a pre-bound ledger entry. Look at all three:"
+show "kubectl -n $NS get $IPC"
+show "kubectl get $IP"
+show "kubectl -n $IAD_NS get svc"
+note "the placeholder is selectorless with no endpoints: the address is assigned"
+note "in MetalLB's own books — a backend-enforced reservation — but silent on the wire."
 note "no pod, no Service of yours, no traffic — and $WEBIP can already go into DNS."

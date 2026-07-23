@@ -2,8 +2,10 @@
 
 Five acts, one script per act, run in order. Every script acts on **the
 cluster kubectl currently points at** (`KUBECONFIG` + current-context) and
-prints presenter notes: what exists, the exact commands for *you* to type
-(highlighted in yellow), and the one-liner takeaways to say out loud.
+narrates itself: cyan notes are the one-liner takeaways to say out loud,
+yellow `$`-prefixed commands are read-only showcases the script runs for
+you — output shown inline — and `[Enter: …]` pauses hold the stage at each
+observation point (they auto-skip when the script runs non-interactively).
 
 | Act | Script | Shows |
 |-----|--------|-------|
@@ -11,7 +13,7 @@ prints presenter notes: what exists, the exact commands for *you* to type
 | 2 | `02-attach.sh` | One annotation attaches the address to a real Service: the gap handoff pins the workload to exactly the claimed IP, the placeholder retires, nginx serves on it. |
 | 3 | `03-lifecycle.sh` | The flagship: **delete the Service** — the address stays Bound, the hold comes back; a *new* Service with the same annotation gets the *same* IP. Workloads are cattle, the address is infrastructure. |
 | 4 | `04-theft.sh` | A thief hand-writes MetalLB's own pin annotation — and MetalLB itself refuses, because the address is assigned in its books. The reservation is not an admission-webhook promise. |
-| 5 | `05-retain.sh` | `reclaimPolicy: Retain`: delete the claim → `Released`, reservation still held; admin clears `claimRef` → a new claim adopts the same address by name. The whole PV lifecycle, for an IP. |
+| 5 | `05-retain.sh` | `reclaimPolicy: Retain`: delete the claim → `Released`, reservation still held; admin clears `claimRef` → an *unpinned* claim binds the existing `Available` address before the driver would allocate a fresh one (bind-before-provision). The whole PV lifecycle, for an IP. |
 | — | `99-teardown.sh` | Deletes everything the demo created, including Retain leftovers. |
 
 ## Prerequisites

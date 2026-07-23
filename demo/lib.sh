@@ -22,8 +22,10 @@ MAGENTA=$'\e[1;35m'; CYAN=$'\e[1;36m'; YELLOW=$'\e[1;33m'; OFF=$'\e[0m'
 
 banner() { printf '\n%s== %s ==%s\n' "$MAGENTA" "$*" "$OFF"; }
 note()   { printf '%s  » %s%s\n' "$CYAN" "$*" "$OFF"; }
-try()    { printf '%s        %s%s\n' "$YELLOW" "$*" "$OFF"; }  # a command for YOU, the presenter
 plain()  { printf '        %s\n' "$*"; }
+# Print a read-only command, run it, and show its output indented — the
+# audience sees both. Takes ONE string; failures print, never kill the act.
+show()   { printf '%s        $ %s%s\n' "$YELLOW" "$1" "$OFF"; { bash -c "$1" 2>&1 || true; } | sed 's/^/        /'; echo; }
 # Hold the stage until the presenter is done looking; no-op when scripted.
 pause()  { if [ -t 0 ]; then echo; read -r -p "        [Enter: ${*:-continue}]"; echo; fi; }
 

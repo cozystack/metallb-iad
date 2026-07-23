@@ -16,5 +16,6 @@ done
 
 kubectl delete "$IPCLASS" "$CLASS" "$RETAIN_CLASS" --ignore-not-found >/dev/null
 note "classes gone; the MetalLB pools and advertisements follow by ownerRef."
-try "kubectl -n $IAD_NS get svc   # no placeholders should remain"
-try "kubectl get $IP              # no ledger entries should remain"
+note "nothing should remain — no placeholders, no ledger entries:"
+show "kubectl -n $IAD_NS get svc"
+show "kubectl get $IP"

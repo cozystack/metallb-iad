@@ -36,12 +36,13 @@ wait_for 60 sh -c "[ \"\$(kubectl -n $NS get svc web -o jsonpath='{.status.loadB
   || { echo "service never got $WEBIP"; exit 1; }
 
 note "the Service got exactly the claimed address — look at who wrote the pin:"
-try "kubectl -n $NS get svc web -o jsonpath='{.metadata.annotations}' | jq"
-try "kubectl -n $NS get events --field-selector involvedObject.name=web | tail"
+show "kubectl -n $NS get svc web -o jsonpath='{.metadata.annotations}' | jq"
 
-note "the placeholder is gone — the workload holds the address in MetalLB's books now:"
-try "kubectl -n $IAD_NS get svc"
-try "kubectl get $IP   # ATTACHEDTO: web"
+note "the ledger records the attachment, and the placeholder retired — the"
+note "workload holds the address in MetalLB's books now:"
+show "kubectl get $IP"
+show "kubectl get $IP -o jsonpath='{.items[0].status.associatedTo}{\"\\n\"}'"
+show "kubectl -n $IAD_NS get svc"
 
 note "and it serves (from inside the cluster; the demo range isn't routed outside):"
-try "kubectl -n $NS exec deploy/web -- wget -qO- http://$WEBIP | head -4"
+show "kubectl -n $NS exec deploy/web -- wget -qO- http://$WEBIP | head -4"

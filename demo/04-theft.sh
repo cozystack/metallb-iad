@@ -23,10 +23,10 @@ EOF
 sleep 5
 [ -z "$(kubectl -n "$NS" get svc thief -o jsonpath='{.status.loadBalancer.ingress}')" ] \
   || { echo "the thief GOT the address — reservation broken"; exit 1; }
-note "MetalLB itself refuses — the address is already assigned in its books:"
-try "kubectl -n $NS get svc thief    # EXTERNAL-IP stays <pending>"
-try "kubectl -n $NS get events --field-selector involvedObject.name=thief | tail -3"
-plain "(the refusal names the current holder: 'address also in use by $NS/web2')"
+note "MetalLB itself refuses — the address is already assigned in its books,"
+note "and the refusal names the current holder:"
+show "kubectl -n $NS get svc thief"
+show "kubectl -n $NS get events --field-selector involvedObject.name=thief | tail -3"
 
 note "that's the point of placeholder-held reservations: in steady state the guarantee"
 note "is MetalLB's own allocator, not an admission webhook that might be missing."
