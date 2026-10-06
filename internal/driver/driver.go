@@ -70,6 +70,12 @@ const (
 	// value limits.
 	PlaceholderClaimNamespaceAnnotation = ProvisionerName + "/claim-namespace"
 	PlaceholderClaimNameAnnotation      = ProvisionerName + "/claim-name"
+
+	// MarkerValue is the value of PlaceholderLabel and PinnedAnnotation.
+	MarkerValue = "true"
+
+	// ServiceKind is the AssociatedTo kind of an address held by a Service.
+	ServiceKind = "Service"
 )
 
 // ClassParameters is this driver's interpretation of the opaque
@@ -156,7 +162,7 @@ func NewPlaceholder(name, namespace, className string, family localv1alpha1.Addr
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
-			Labels:    map[string]string{PlaceholderLabel: "true"},
+			Labels:    map[string]string{PlaceholderLabel: MarkerValue},
 			Annotations: map[string]string{
 				MetalLBPoolAnnotation: PoolName(className),
 			},
@@ -181,7 +187,7 @@ func NewPlaceholder(name, namespace, className string, family localv1alpha1.Addr
 // against the configured placeholder namespace — the label alone is
 // forgeable by anyone who can create Services.
 func IsPlaceholder(svc *corev1.Service) bool {
-	return svc.Labels[PlaceholderLabel] == "true"
+	return svc.Labels[PlaceholderLabel] == MarkerValue
 }
 
 // RequestedFamilies expands a claim's family into the concrete families it

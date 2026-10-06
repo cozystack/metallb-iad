@@ -120,7 +120,7 @@ func (r *IPAddressReconciler) servedByUs(ctx context.Context, addr *localv1alpha
 // holderLive reports whether the associated workload still exists. Holder
 // kinds other than Service are treated as live, conservatively.
 func (r *IPAddressReconciler) holderLive(ctx context.Context, holder *localv1alpha1.AssociationReference) (bool, error) {
-	if holder.Kind != "Service" {
+	if holder.Kind != driver.ServiceKind {
 		return true, nil
 	}
 	svc := &corev1.Service{}
@@ -169,10 +169,10 @@ func (r *IPAddressReconciler) finalize(ctx context.Context, addr *localv1alpha1.
 	if err := r.deletePlaceholders(ctx, addr.Name); err != nil {
 		return err
 	}
-	if holder := addr.Status.AssociatedTo; holder != nil && holder.Kind == "Service" {
+	if holder := addr.Status.AssociatedTo; holder != nil && holder.Kind == driver.ServiceKind {
 		svc := &corev1.Service{}
 		err := r.Get(ctx, types.NamespacedName{Namespace: holder.Namespace, Name: holder.Name}, svc)
-		if err == nil && svc.Annotations[driver.PinnedAnnotation] == "true" {
+		if err == nil && svc.Annotations[driver.PinnedAnnotation] == driver.MarkerValue {
 			delete(svc.Annotations, driver.MetalLBPinAnnotation)
 			delete(svc.Annotations, driver.PinnedAnnotation)
 			if err := r.Update(ctx, svc); err != nil {
@@ -280,7 +280,7 @@ func (r *IPAddressReconciler) addressesForService(ctx context.Context, o client.
 				continue
 			}
 			if holder := addr.Status.AssociatedTo; holder != nil &&
-				holder.Kind == "Service" && holder.Namespace == svc.Namespace && holder.Name == svc.Name {
+				holder.Kind == driver.ServiceKind && holder.Namespace == svc.Namespace && holder.Name == svc.Name {
 				add(addr.Name)
 			}
 		}

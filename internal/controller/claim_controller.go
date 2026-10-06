@@ -277,7 +277,7 @@ func (r *ClaimReconciler) claimPlaceholders(ctx context.Context, claimKey types.
 	services := &corev1.ServiceList{}
 	if err := r.List(ctx, services,
 		client.InNamespace(r.PlaceholderNamespace),
-		client.MatchingLabels{driver.PlaceholderLabel: "true"}); err != nil {
+		client.MatchingLabels{driver.PlaceholderLabel: driver.MarkerValue}); err != nil {
 		return nil, err
 	}
 	var matched []corev1.Service
