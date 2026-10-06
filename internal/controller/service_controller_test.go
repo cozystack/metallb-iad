@@ -1,5 +1,5 @@
 /*
-Copyright 2026 Timofei Larkin
+Copyright 2026 The Cozystack Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -27,8 +27,8 @@ import (
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/cozystack/metallb-iad/internal/driver"
 	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
-	"github.com/lllamnyp/metallb-iad/internal/driver"
 )
 
 func serviceRec(c client.Client) *ServiceReconciler {

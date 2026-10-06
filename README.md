@@ -1,7 +1,7 @@
 # metallb-iad
 
 MetalLB IP Allocation Driver — the reference per-class driver for the
-[address-controller](https://github.com/lllamnyp/address-controller) core
+[address-controller](https://github.com/cozystack/address-controller) core
 (IP addresses as a first-class resource,
 [cozystack/community#35](https://github.com/cozystack/community/pull/35)).
 
@@ -13,7 +13,7 @@ driver owns everything MetalLB-shaped.
 **The high-level algorithms — provisioning, backend rendering, association,
 conflict handling — are recorded in [docs/design.md](docs/design.md)**,
 written against the core's contract
-([address-controller docs/design.md](https://github.com/lllamnyp/address-controller/blob/feat/core-controller/docs/design.md)).
+([address-controller docs/design.md](https://github.com/cozystack/address-controller/blob/feat/core-controller/docs/design.md)).
 
 ## What it does
 
@@ -71,7 +71,7 @@ Four controllers implement the driver side of the contract:
 
 Packaged as a Helm chart at [`chart/metallb-iad`](chart/metallb-iad) (no
 kustomize). The CRDs belong to the
-[address-controller](https://github.com/lllamnyp/address-controller) chart —
+[address-controller](https://github.com/cozystack/address-controller) chart —
 install that first. The driver's ClusterRole
 (`chart/metallb-iad/templates/role.yaml`) is controller-gen output written by
 `make manifests`, never edited by hand.
@@ -88,7 +88,7 @@ namespace). Tenants must have no write access to it — a Service carrying the
 placeholder label is exempt from conflict detection only inside that
 namespace.
 
-The driver image is published as `ghcr.io/lllamnyp/metallb-iad:main` (plus
+The driver image is published as `ghcr.io/cozystack/metallb-iad:main` (plus
 `main-<sha>` and semver tags) by the release workflow on every push to main.
 
 ## Building
@@ -96,7 +96,7 @@ The driver image is published as `ghcr.io/lllamnyp/metallb-iad:main` (plus
 ```sh
 make build                      # vet + build the driver binary
 go test ./internal/...
-make docker-build docker-push   # publish ghcr.io/lllamnyp/metallb-iad:<git-sha>
+make docker-build docker-push   # publish ghcr.io/cozystack/metallb-iad:<git-sha>
 make helm-package               # lint and package the chart into dist/
 ```
 

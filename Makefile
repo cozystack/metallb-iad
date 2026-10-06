@@ -3,7 +3,7 @@
 
 # Image coordinates. TAG defaults to something unique per commit; override for
 # releases (e.g. make docker-push TAG=v0.1.0) or floating tags (TAG=main).
-IMG_REPO ?= ghcr.io/lllamnyp/metallb-iad
+IMG_REPO ?= ghcr.io/cozystack/metallb-iad
 TAG ?= $(shell git describe --tags --always --dirty)
 IMG ?= $(IMG_REPO):$(TAG)
 PLATFORMS ?= linux/amd64,linux/arm64

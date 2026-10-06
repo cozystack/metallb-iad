@@ -12,7 +12,7 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOARCH=${TARGETARCH} go build -trimpath -o /out/manager ./cmd
 
 FROM gcr.io/distroless/static:nonroot
-LABEL org.opencontainers.image.source="https://github.com/lllamnyp/metallb-iad"
+LABEL org.opencontainers.image.source="https://github.com/cozystack/metallb-iad"
 COPY --from=build /out/manager /manager
 USER 65532:65532
 ENTRYPOINT ["/manager"]

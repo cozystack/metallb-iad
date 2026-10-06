@@ -1,9 +1,9 @@
 # Design: MetalLB IP Allocation Driver (metallb-iad)
 
 - **Component:** the reference per-class driver for
-  [address-controller](https://github.com/lllamnyp/address-controller)
+  [address-controller](https://github.com/cozystack/address-controller)
   (contract:
-  [docs/design.md](https://github.com/lllamnyp/address-controller/blob/feat/core-controller/docs/design.md)
+  [docs/design.md](https://github.com/cozystack/address-controller/blob/feat/core-controller/docs/design.md)
   in that repo; original proposal:
   [cozystack/community#35](https://github.com/cozystack/community/pull/35))
 - **Provisioner name:** `metallb.drivers.local.sdn.cozystack.io`

@@ -6,5 +6,5 @@ domain: iad.cozystack.io
 layout:
 - go.kubebuilder.io/v4
 projectName: metallb-iad
-repo: github.com/lllamnyp/metallb-iad
+repo: github.com/cozystack/metallb-iad
 version: "3"
