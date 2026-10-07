@@ -1,5 +1,5 @@
 /*
-Copyright 2026 Timofei Larkin
+Copyright 2026 The Cozystack Authors.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -32,8 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/cozystack/metallb-iad/internal/driver"
 	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
-	"github.com/lllamnyp/metallb-iad/internal/driver"
 )
 
 // ServiceReconciler is the association half of the driver — the separate,
@@ -164,7 +164,7 @@ func (r *ServiceReconciler) associate(ctx context.Context, svc *corev1.Service, 
 			return client.IgnoreNotFound(err)
 		}
 		desired := &localv1alpha1.AssociationReference{
-			Kind: "Service", Namespace: svc.Namespace, Name: svc.Name,
+			Kind: driver.ServiceKind, Namespace: svc.Namespace, Name: svc.Name,
 		}
 		if addr.Status.AssociatedTo == nil || *addr.Status.AssociatedTo != *desired {
 			addr.Status.AssociatedTo = desired
@@ -179,12 +179,12 @@ func (r *ServiceReconciler) associate(ctx context.Context, svc *corev1.Service, 
 
 	pin := strings.Join(ips, ",")
 	if svc.Annotations[driver.MetalLBPinAnnotation] != pin ||
-		svc.Annotations[driver.PinnedAnnotation] != "true" {
+		svc.Annotations[driver.PinnedAnnotation] != driver.MarkerValue {
 		if svc.Annotations == nil {
 			svc.Annotations = map[string]string{}
 		}
 		svc.Annotations[driver.MetalLBPinAnnotation] = pin
-		svc.Annotations[driver.PinnedAnnotation] = "true"
+		svc.Annotations[driver.PinnedAnnotation] = driver.MarkerValue
 		if err := r.Update(ctx, svc); err != nil {
 			return err
 		}
@@ -214,7 +214,7 @@ func (r *ServiceReconciler) deletePlaceholders(ctx context.Context, addressName 
 // holderExists reports whether the Service an association points at is
 // still alive.
 func (r *ServiceReconciler) holderExists(ctx context.Context, holder *localv1alpha1.AssociationReference) (bool, error) {
-	if holder.Kind != "Service" {
+	if holder.Kind != driver.ServiceKind {
 		return true, nil // unknown holder kinds are treated as live, conservatively
 	}
 	svc := &corev1.Service{}
@@ -231,7 +231,7 @@ func (r *ServiceReconciler) holderExists(ctx context.Context, holder *localv1alp
 // unpin removes a pin this driver wrote (never a hand-written one) and
 // clears associatedTo on the addresses it pointed at.
 func (r *ServiceReconciler) unpin(ctx context.Context, svc *corev1.Service) error {
-	if svc.Annotations[driver.PinnedAnnotation] != "true" {
+	if svc.Annotations[driver.PinnedAnnotation] != driver.MarkerValue {
 		return nil
 	}
 	delete(svc.Annotations, driver.MetalLBPinAnnotation)
@@ -254,7 +254,7 @@ func (r *ServiceReconciler) withdrawAssociations(ctx context.Context, svc *corev
 	for i := range addresses.Items {
 		addr := &addresses.Items[i]
 		if holder := addr.Status.AssociatedTo; holder != nil &&
-			holder.Kind == "Service" && holder.Namespace == svc.Namespace && holder.Name == svc.Name {
+			holder.Kind == driver.ServiceKind && holder.Namespace == svc.Namespace && holder.Name == svc.Name {
 			addr.Status.AssociatedTo = nil
 			if err := r.Status().Update(ctx, addr); err != nil {
 				return err
@@ -304,7 +304,7 @@ func (r *ServiceReconciler) detectConflicts(ctx context.Context, svc *corev1.Ser
 // hold it.
 func authorizes(addr *localv1alpha1.IPAddress, svc *corev1.Service) bool {
 	holder := addr.Status.AssociatedTo
-	return holder != nil && holder.Kind == "Service" &&
+	return holder != nil && holder.Kind == driver.ServiceKind &&
 		holder.Namespace == svc.Namespace && holder.Name == svc.Name
 }
 
@@ -326,7 +326,7 @@ func sortByFamily(ips []string) {
 func (r *ServiceReconciler) servicesForAddress(ctx context.Context, o client.Object) []reconcile.Request {
 	addr := o.(*localv1alpha1.IPAddress)
 	var reqs []reconcile.Request
-	if holder := addr.Status.AssociatedTo; holder != nil && holder.Kind == "Service" {
+	if holder := addr.Status.AssociatedTo; holder != nil && holder.Kind == driver.ServiceKind {
 		reqs = append(reqs, reconcile.Request{
 			NamespacedName: types.NamespacedName{Namespace: holder.Namespace, Name: holder.Name},
 		})

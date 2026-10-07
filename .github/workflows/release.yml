@@ -29,6 +29,10 @@ jobs:
 
       - id: meta
         uses: docker/metadata-action@v5
+        env:
+          # GHCR links a multi-arch package to its repo via the index
+          # annotation; the Dockerfile LABEL only reaches the per-arch configs.
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ${{ env.IMAGE }}
           tags: |
@@ -43,6 +47,8 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max

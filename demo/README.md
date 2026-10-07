@@ -18,7 +18,7 @@ observation point (they auto-skip when the script runs non-interactively).
 
 ## Prerequisites
 
-- The [address-controller](https://github.com/lllamnyp/address-controller) and
+- The [address-controller](https://github.com/cozystack/address-controller) and
   metallb-iad charts installed; MetalLB running (`METALLB_NS`, default
   `cozy-metallb`; driver namespace `IAD_NS`, default `cozy-metallb-iad`).
 - The demo ranges `10.242.42.0/24` / `10.242.43.0/24` need not be routed
