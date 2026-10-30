@@ -32,8 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 	"github.com/cozystack/metallb-iad/internal/driver"
-	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
 )
 
 const testPlaceholderNS = "metallb-iad-system"
