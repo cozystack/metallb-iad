@@ -66,6 +66,9 @@ func TestNewPlaceholderForAllocation(t *testing.T) {
 	if !IsPlaceholder(svc) {
 		t.Error("placeholder label missing")
 	}
+	if svc.Annotations[localv1alpha1.ServiceAutoClaimAnnotation] != "false" {
+		t.Error("placeholder not opted out of the core's auto-claim")
+	}
 	if svc.Spec.Selector != nil {
 		t.Error("placeholder must be selectorless so it has no endpoints and is never announced")
 	}

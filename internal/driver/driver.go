@@ -165,6 +165,9 @@ func NewPlaceholder(name, namespace, className string, family localv1alpha1.Addr
 			Labels:    map[string]string{PlaceholderLabel: MarkerValue},
 			Annotations: map[string]string{
 				MetalLBPoolAnnotation: PoolName(className),
+				// Placeholders hold reservations; the core must not
+				// auto-claim an address for them.
+				localv1alpha1.ServiceAutoClaimAnnotation: "false",
 			},
 		},
 		Spec: corev1.ServiceSpec{
