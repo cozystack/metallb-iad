@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 	"github.com/cozystack/metallb-iad/internal/driver"
-	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
 )
 
 // IPAddressReconciler enforces the reservation-hold invariant — a
