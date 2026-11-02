@@ -30,3 +30,25 @@ controller:
       memory: 64Mi
     limits:
       memory: 128Mi
+
+# Optional ValidatingAdmissionPolicy reserving the Service fields that steer
+# MetalLB at a specific address or pool — the metallb.io/ (and legacy
+# metallb.universe.tf/) loadBalancerIPs, address-pool and allow-shared-ip
+# annotations, spec.loadBalancerIP — and the driver's own pinned marker.
+# Only the driver's ServiceAccount and the principals below may set, change
+# or remove them; writes that leave them as they were are always admitted.
+admissionPolicy:
+  enabled: false
+  # [Deny], or e.g. [Warn, Audit] to observe what would be denied first.
+  validationActions: [Deny]
+  # Namespaces the policy applies to. Scope it to tenant namespaces when
+  # platform components elsewhere set these annotations themselves.
+  namespaceSelector: {}
+  # Usernames and groups exempt in addition to the driver's ServiceAccount.
+  # Admission policies bind system:masters too, so cluster admins must be
+  # listed; kubeadm since 1.29 issues admin credentials in
+  # kubeadm:cluster-admins instead.
+  allowedUsernames: []
+  allowedGroups:
+    - system:masters
+    - kubeadm:cluster-admins

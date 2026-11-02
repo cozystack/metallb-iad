@@ -262,9 +262,10 @@ forbidding non-allowlisted principals from writing pool-selecting or
 address-pinning annotations — remains part of any real deployment, for
 two reasons: it is the only line of defense *during handoff gaps* (§5),
 and it stops tenants from steering MetalLB at reserved addresses in ways
-that would otherwise end as detected-but-noisy conflicts. The policy is
-deployment configuration and ships with an installation, not with this
-controller. Placeholders live in a driver-owned namespace tenants must
+that would otherwise end as detected-but-noisy conflicts. The chart
+ships the policy as an opt-in (`admissionPolicy.enabled`); which
+namespaces it binds and which principals it exempts are installation
+choices. Placeholders live in a driver-owned namespace tenants must
 have no write access to; the `--placeholder-namespace` flag names it.
 
 ## 9. Known gaps (acknowledged, deferred)
