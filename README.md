@@ -10,7 +10,7 @@ backend: it reserves and attaches IPs that are ultimately announced by
 MetalLB. The core controller owns the generic claim–address lifecycle; this
 driver owns everything MetalLB-shaped.
 
-**The high-level algorithms — provisioning, backend rendering, association,
+**The high-level algorithms — provisioning, the backend reference, association,
 conflict handling — are recorded in [docs/design.md](docs/design.md)**,
 written against the core's contract
 ([address-controller docs/design.md](https://github.com/cozystack/address-controller/blob/feat/core-controller/docs/design.md)).
@@ -28,8 +28,12 @@ spec:
   provisioner: metallb.drivers.local.sdn.cozystack.io
   reclaimPolicy: Retain
   parameters:
-    addresses: ["203.0.113.0/24"]   # CIDRs this class carves from
+    pool: public    # an existing MetalLB IPAddressPool with autoAssign: false
 ```
+
+The class names MetalLB configuration and does not restate it: the admin
+creates the pool and its advertisement in MetalLB's own terms, and the driver
+only reads them.
 
 MetalLB has no native reservation concept, so the driver manufactures
 one: **a reservation is held by a placeholder Service** — selectorless,
@@ -45,11 +49,10 @@ Four controllers implement the driver side of the contract:
   pre-bound `IPAddress` — with the class's reclaim policy, a
   `source.fromClass` marker, and the driver's teardown finalizer. The
   driver implements **Allocate + Pin**, not Adopt.
-- **Class** — renders the MetalLB configuration per served class: one
-  `IPAddressPool` (`iad-<class>`) with `autoAssign: false` covering the
-  class ranges, and one `L2Advertisement` selecting it, owner-referenced to
-  the class. That is the entire per-cluster MetalLB setup — no pool per
-  tenant, no `/32`s.
+- **Class** — checks each served class against the pool it names and
+  reports, as `PoolRefused` events, a pool that is missing, auto-assigns,
+  does not admit placeholders, or is named by another class. Claims of a
+  refused class get no new reservations.
 - **Service** — the association layer, a separate and reversible act. A
   tenant annotates a Service with
   `local.sdn.cozystack.io/ip-address-claim: <claim>` (same namespace, by
@@ -81,7 +84,9 @@ helm upgrade --install metallb-iad chart/metallb-iad \
   --namespace metallb-iad-system --create-namespace
 ```
 
-Set `metallbNamespace` if MetalLB does not live in `metallb-system`.
+Set `metallbNamespace` if MetalLB does not live in `metallb-system`, and
+`loadBalancerClass` to the `--lb-class` of the MetalLB instance the driver
+fronts if that instance is not the cluster default.
 Reservation placeholders live in the release namespace by default; set
 `placeholderNamespace` to put them elsewhere (the chart then creates that
 namespace). Tenants must have no write access to it — a Service carrying the
@@ -90,6 +95,25 @@ namespace.
 
 The driver image is published as `ghcr.io/cozystack/metallb-iad:main` (plus
 `main-<sha>` and semver tags) by the release workflow on every push to main.
+
+### Migrating classes that listed addresses
+
+Earlier releases took `parameters.addresses` and rendered an
+`IPAddressPool` and `L2Advertisement` named `iad-<class>`, owned by the
+class. This release refuses that format. Keep the rendered objects as the
+admin's and point the class at them:
+
+```sh
+kubectl -n <metallb-namespace> patch ipaddresspool iad-<class> --type=json \
+  -p '[{"op":"remove","path":"/metadata/ownerReferences"}]'
+kubectl -n <metallb-namespace> patch l2advertisement iad-<class> --type=json \
+  -p '[{"op":"remove","path":"/metadata/ownerReferences"}]'
+kubectl patch ipaddressclass <class> --type=merge \
+  -p '{"spec":{"parameters":{"addresses":null,"pool":"iad-<class>"}}}'
+```
+
+Remove the owner references first: otherwise deleting the class later
+deletes the pool and withdraws its addresses.
 
 ## Building
 
@@ -113,5 +137,3 @@ make helm-package               # lint and package the chart into dist/
 - Backwards inventory reconciliation (design §6): importing addresses an
   eager MetalLB handed to plain Services into `IPAddress` objects after the
   fact.
-- MetalLB range syntax beyond CIDRs (e.g. `192.168.9.1-192.168.9.5`) in
-  class parameters, and BGP advertisement rendering (L2 only).

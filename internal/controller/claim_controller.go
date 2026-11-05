@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
@@ -50,12 +51,19 @@ type ClaimReconciler struct {
 	// PlaceholderNamespace is where reservation placeholders live. Tenants
 	// must have no write access to it.
 	PlaceholderNamespace string
+	// MetalLBNamespace is where the pools classes name live.
+	MetalLBNamespace string
+	// LoadBalancerClass is that of the MetalLB instance this driver fronts;
+	// placeholders carry it. Empty for the cluster default.
+	LoadBalancerClass string
 }
 
 // +kubebuilder:rbac:groups=local.sdn.cozystack.io,resources=ipaddressclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=local.sdn.cozystack.io,resources=ipaddresses,verbs=get;list;watch;create
 // +kubebuilder:rbac:groups=local.sdn.cozystack.io,resources=ipaddressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=metallb.io,resources=ipaddresspools,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile provisions reservations for a pending claim of this driver.
@@ -109,9 +117,14 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, r.cleanupOrphanPlaceholders(ctx, req.NamespacedName)
 	}
 
+	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, r.PlaceholderNamespace, class)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	waiting := false
 	for _, family := range missing {
-		done, err := r.provisionFamily(ctx, claim, class, family)
+		done, err := r.provisionFamily(ctx, claim, class, pool, problem, family)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -154,13 +167,21 @@ func (r *ClaimReconciler) missingFamilies(ctx context.Context, claim *localv1alp
 }
 
 // provisionFamily drives one family through reserve → observe → record.
-// It returns done=false while the reservation waits on MetalLB.
-func (r *ClaimReconciler) provisionFamily(ctx context.Context, claim *localv1alpha1.IPAddressClaim, class *localv1alpha1.IPAddressClass, family localv1alpha1.AddressFamily) (bool, error) {
+// It returns done=false while the reservation waits on MetalLB. A class
+// whose pool has a problem gets no new placeholder; one already created is
+// still observed and recorded, so an address MetalLB assigned is not
+// stranded.
+func (r *ClaimReconciler) provisionFamily(ctx context.Context, claim *localv1alpha1.IPAddressClaim, class *localv1alpha1.IPAddressClass, pool, problem string, family localv1alpha1.AddressFamily) (bool, error) {
 	name := driver.AllocationPlaceholderName(claim.UID, family)
 	placeholder := &corev1.Service{}
 	err := r.Get(ctx, types.NamespacedName{Namespace: r.PlaceholderNamespace, Name: name}, placeholder)
 	if apierrors.IsNotFound(err) {
-		placeholder = driver.NewPlaceholder(name, r.PlaceholderNamespace, class.Name, family, "")
+		if problem != "" {
+			r.Recorder.Eventf(claim, "Warning", "PoolRefused",
+				"IPAddressClass %s cannot be provisioned: %s", class.Name, problem)
+			return false, nil
+		}
+		placeholder = driver.NewPlaceholder(name, r.PlaceholderNamespace, pool, r.LoadBalancerClass, family, "")
 		placeholder.Annotations[driver.PlaceholderClaimNamespaceAnnotation] = claim.Namespace
 		placeholder.Annotations[driver.PlaceholderClaimNameAnnotation] = claim.Name
 		if err := r.Create(ctx, placeholder); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -328,10 +349,14 @@ func (r *ClaimReconciler) pendingClaimsOfOurs(ctx context.Context, _ client.Obje
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ClaimReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	pool := &unstructured.Unstructured{}
+	pool.SetGroupVersionKind(ipAddressPoolGVK)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&localv1alpha1.IPAddressClaim{}).
 		Watches(&localv1alpha1.IPAddress{}, handler.EnqueueRequestsFromMapFunc(r.pendingClaimsOfOurs)).
 		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(r.claimForPlaceholder)).
+		Watches(&localv1alpha1.IPAddressClass{}, handler.EnqueueRequestsFromMapFunc(r.pendingClaimsOfOurs)).
+		Watches(pool, handler.EnqueueRequestsFromMapFunc(r.pendingClaimsOfOurs)).
 		Named("iad-claim").
 		Complete(r)
 }

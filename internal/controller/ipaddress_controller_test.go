@@ -22,6 +22,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,6 +57,33 @@ func TestUnassociatedAddressGetsHoldPlaceholder(t *testing.T) {
 	}
 	if hold.Labels[driver.PlaceholderAddressLabel] != "ip-203-0-113-1" {
 		t.Error("hold placeholder not linked to the address")
+	}
+	if hold.Annotations[driver.MetalLBPoolAnnotation] != testPool {
+		t.Errorf("hold pool = %q, want the class's pool %q", hold.Annotations[driver.MetalLBPoolAnnotation], testPool)
+	}
+}
+
+func TestHoldWithUnparsableClassPinsOnly(t *testing.T) {
+	// A class whose parameters name no pool still gets its address held:
+	// the pin alone suffices.
+	claim, addr := boundClaimWithAddress()
+	class := iadClass()
+	class.Spec.Parameters = &runtime.RawExtension{Raw: []byte(`{"addresses":["203.0.113.0/29"]}`)}
+	c := testClient(t, class, claim, addr)
+	reconcileOnce(t, addressRec(c), "", "ip-203-0-113-1")
+
+	hold := &corev1.Service{}
+	err := c.Get(context.Background(), types.NamespacedName{
+		Namespace: testPlaceholderNS, Name: driver.HoldPlaceholderName("ip-203-0-113-1"),
+	}, hold)
+	if err != nil {
+		t.Fatalf("hold placeholder not created: %v", err)
+	}
+	if hold.Annotations[driver.MetalLBPinAnnotation] != "203.0.113.1" {
+		t.Errorf("hold pin = %q, want the held address", hold.Annotations[driver.MetalLBPinAnnotation])
+	}
+	if pool, named := hold.Annotations[driver.MetalLBPoolAnnotation]; named {
+		t.Errorf("hold names pool %q although the class names none", pool)
 	}
 }
 

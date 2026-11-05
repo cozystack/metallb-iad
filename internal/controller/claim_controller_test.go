@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -50,12 +51,18 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	// The MetalLB kinds are only ever handled as unstructured objects.
 	scheme.AddKnownTypeWithName(ipAddressPoolGVK, &unstructured.Unstructured{})
 	scheme.AddKnownTypeWithName(ipAddressPoolGVK.GroupVersion().WithKind("IPAddressPoolList"), &unstructured.UnstructuredList{})
-	scheme.AddKnownTypeWithName(l2AdvertisementGVK, &unstructured.Unstructured{})
-	scheme.AddKnownTypeWithName(l2AdvertisementGVK.GroupVersion().WithKind("L2AdvertisementList"), &unstructured.UnstructuredList{})
 	return scheme
 }
 
+// testClient builds a fake client holding objs plus the placeholder
+// namespace and a usable MetalLB pool named testPool.
 func testClient(t *testing.T, objs ...client.Object) client.Client {
+	t.Helper()
+	return bareTestClient(t, append([]client.Object{testNamespace(), metallbPool(false)}, objs...)...)
+}
+
+// bareTestClient builds a fake client holding only objs.
+func bareTestClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
@@ -71,13 +78,33 @@ func testClient(t *testing.T, objs ...client.Object) client.Client {
 		Build()
 }
 
+const (
+	testPool      = "reserved"
+	testMetalLBNS = "metallb-system"
+)
+
+func testNamespace() *corev1.Namespace {
+	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testPlaceholderNS}}
+}
+
+// metallbPool is the admin's IPAddressPool the test class names.
+func metallbPool(autoAssign bool) *unstructured.Unstructured {
+	pool := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{"addresses": []any{"203.0.113.0/29"}, "autoAssign": autoAssign},
+	}}
+	pool.SetGroupVersionKind(ipAddressPoolGVK)
+	pool.SetNamespace(testMetalLBNS)
+	pool.SetName(testPool)
+	return pool
+}
+
 func iadClass() *localv1alpha1.IPAddressClass {
 	return &localv1alpha1.IPAddressClass{
 		ObjectMeta: metav1.ObjectMeta{Name: "public"},
 		Spec: localv1alpha1.IPAddressClassSpec{
 			Provisioner:   driver.ProvisionerName,
 			ReclaimPolicy: localv1alpha1.ReclaimRetain,
-			Parameters:    &runtime.RawExtension{Raw: []byte(`{"addresses":["203.0.113.0/29","2001:db8::/126"]}`)},
+			Parameters:    &runtime.RawExtension{Raw: []byte(`{"pool":"reserved"}`)},
 		},
 	}
 }
@@ -101,7 +128,7 @@ func stampedClaim(family localv1alpha1.AddressFamily) *localv1alpha1.IPAddressCl
 // have created, optionally with MetalLB's assignment already observed.
 func allocationPlaceholder(claim *localv1alpha1.IPAddressClaim, family localv1alpha1.AddressFamily, assignedIP string) *corev1.Service {
 	svc := driver.NewPlaceholder(
-		driver.AllocationPlaceholderName(claim.UID, family), testPlaceholderNS, "public", family, "")
+		driver.AllocationPlaceholderName(claim.UID, family), testPlaceholderNS, testPool, "", family, "")
 	svc.Annotations[driver.PlaceholderClaimNamespaceAnnotation] = claim.Namespace
 	svc.Annotations[driver.PlaceholderClaimNameAnnotation] = claim.Name
 	if assignedIP != "" {
@@ -116,6 +143,7 @@ func claimRec(c client.Client) *ClaimReconciler {
 		Scheme:               c.Scheme(),
 		Recorder:             record.NewFakeRecorder(100),
 		PlaceholderNamespace: testPlaceholderNS,
+		MetalLBNamespace:     testMetalLBNS,
 	}
 }
 
@@ -151,6 +179,47 @@ func listPlaceholders(t *testing.T, c client.Client) []corev1.Service {
 	return list.Items
 }
 
+func TestRefusedPoolGetsNoPlaceholder(t *testing.T) {
+	recorder := record.NewFakeRecorder(100)
+	c := bareTestClient(t, testNamespace(), metallbPool(true), iadClass(), stampedClaim(localv1alpha1.FamilyIPv4))
+	r := claimRec(c)
+	r.Recorder = recorder
+	reconcileOnce(t, r, "tenant-a", "web")
+
+	if placeholders := listPlaceholders(t, c); len(placeholders) != 0 {
+		t.Errorf("got %d placeholders for a class whose pool auto-assigns, want 0", len(placeholders))
+	}
+	if events := drainEvents(recorder); len(events) != 1 || !strings.Contains(events[0], "PoolRefused") {
+		t.Errorf("events = %v, want one PoolRefused on the claim", events)
+	}
+}
+
+func TestRefusedPoolStillRecordsAnAssignedPlaceholder(t *testing.T) {
+	// A placeholder created before the pool went bad holds an address
+	// MetalLB assigned; it is recorded rather than stranded.
+	claim := stampedClaim(localv1alpha1.FamilyIPv4)
+	c := bareTestClient(t, testNamespace(), metallbPool(true), iadClass(), claim,
+		allocationPlaceholder(claim, localv1alpha1.FamilyIPv4, "203.0.113.7"))
+	reconcileOnce(t, claimRec(c), "tenant-a", "web")
+
+	if addrs := listAddresses(t, c); len(addrs) != 1 || addrs[0].Spec.Address != "203.0.113.7" {
+		t.Errorf("addresses = %+v, want the assigned one recorded", addrs)
+	}
+}
+
+func TestPlaceholderCarriesLoadBalancerClass(t *testing.T) {
+	c := testClient(t, iadClass(), stampedClaim(localv1alpha1.FamilyIPv4))
+	r := claimRec(c)
+	r.LoadBalancerClass = "metallb.io/reserved"
+	reconcileOnce(t, r, "tenant-a", "web")
+
+	placeholders := listPlaceholders(t, c)
+	if len(placeholders) != 1 || placeholders[0].Spec.LoadBalancerClass == nil ||
+		*placeholders[0].Spec.LoadBalancerClass != "metallb.io/reserved" {
+		t.Errorf("placeholders = %+v, want one carrying the driver's loadBalancerClass", placeholders)
+	}
+}
+
 func TestReservesViaPlaceholder(t *testing.T) {
 	c := testClient(t, iadClass(), stampedClaim(localv1alpha1.FamilyIPv4))
 	reconcileOnce(t, claimRec(c), "tenant-a", "web")
@@ -160,8 +229,8 @@ func TestReservesViaPlaceholder(t *testing.T) {
 		t.Fatalf("got %d placeholders, want 1", len(placeholders))
 	}
 	svc := placeholders[0]
-	if svc.Annotations[driver.MetalLBPoolAnnotation] != "iad-public" {
-		t.Errorf("pool annotation = %q, want iad-public", svc.Annotations[driver.MetalLBPoolAnnotation])
+	if svc.Annotations[driver.MetalLBPoolAnnotation] != testPool {
+		t.Errorf("pool annotation = %q, want the class's pool %q", svc.Annotations[driver.MetalLBPoolAnnotation], testPool)
 	}
 	if _, pinned := svc.Annotations[driver.MetalLBPinAnnotation]; pinned {
 		t.Error("allocation placeholder pinned before MetalLB assigned anything")
@@ -285,7 +354,7 @@ func TestOrphanPlaceholderCleanup(t *testing.T) {
 	// An allocation placeholder that never materialized an IPAddress...
 	orphan := allocationPlaceholder(claim, localv1alpha1.FamilyIPv4, "")
 	// ...and one linked to a live IPAddress (Retain semantics: it must stay).
-	held := driver.NewPlaceholder("iad-ip-203-0-113-9", testPlaceholderNS, "public", localv1alpha1.FamilyIPv4, "203.0.113.9")
+	held := driver.NewPlaceholder("iad-ip-203-0-113-9", testPlaceholderNS, testPool, "", localv1alpha1.FamilyIPv4, "203.0.113.9")
 	held.Annotations[driver.PlaceholderClaimNamespaceAnnotation] = claim.Namespace
 	held.Annotations[driver.PlaceholderClaimNameAnnotation] = claim.Name
 	backing := &localv1alpha1.IPAddress{

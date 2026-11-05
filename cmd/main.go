@@ -70,11 +70,15 @@ func main() {
 	var enableHTTP2 bool
 	var metallbNamespace string
 	var placeholderNamespace string
+	var loadBalancerClass string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metallbNamespace, "metallb-namespace", "metallb-system",
 		"The namespace MetalLB reads its configuration resources from.")
 	flag.StringVar(&placeholderNamespace, "placeholder-namespace", "metallb-iad-system",
 		"The namespace reservation placeholder Services are created in. Tenants must have no write access to it.")
+	flag.StringVar(&loadBalancerClass, "lb-class", "",
+		"The --lb-class of the MetalLB instance this driver fronts; empty for the cluster's default implementation. "+
+			"Placeholders carry it as spec.loadBalancerClass.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -223,15 +227,19 @@ func main() {
 		Scheme:               mgr.GetScheme(),
 		Recorder:             mgr.GetEventRecorderFor("iad-claim-controller"),
 		PlaceholderNamespace: placeholderNamespace,
+		MetalLBNamespace:     metallbNamespace,
+		LoadBalancerClass:    loadBalancerClass,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Claim")
 		os.Exit(1)
 	}
 	if err = (&controller.ClassReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		Recorder:         mgr.GetEventRecorderFor("iad-class-controller"),
-		MetalLBNamespace: metallbNamespace,
+		Client:               mgr.GetClient(),
+		Scheme:               mgr.GetScheme(),
+		Recorder:             mgr.GetEventRecorderFor("iad-class-controller"),
+		MetalLBNamespace:     metallbNamespace,
+		PlaceholderNamespace: placeholderNamespace,
+		LoadBalancerClass:    loadBalancerClass,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Class")
 		os.Exit(1)
@@ -250,6 +258,7 @@ func main() {
 		Scheme:               mgr.GetScheme(),
 		Recorder:             mgr.GetEventRecorderFor("iad-ipaddress-controller"),
 		PlaceholderNamespace: placeholderNamespace,
+		LoadBalancerClass:    loadBalancerClass,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "IPAddress")
 		os.Exit(1)

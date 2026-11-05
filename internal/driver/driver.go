@@ -21,13 +21,17 @@ limitations under the License.
 package driver
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -79,36 +83,97 @@ const (
 )
 
 // ClassParameters is this driver's interpretation of the opaque
-// IPAddressClass.spec.parameters blob.
+// IPAddressClass.spec.parameters blob. The class names MetalLB
+// configuration by reference and does not restate it.
 type ClassParameters struct {
-	// Addresses are the CIDRs the class's MetalLB pool covers.
-	Addresses []string `json:"addresses"`
+	// Pool names an existing MetalLB IPAddressPool, in the MetalLB
+	// namespace, that the admin owns together with its advertisements.
+	Pool string `json:"pool"`
 }
 
 // ParseClassParameters decodes and validates class parameters.
 func ParseClassParameters(raw *runtime.RawExtension) (ClassParameters, error) {
 	var params ClassParameters
 	if raw == nil || len(raw.Raw) == 0 {
-		return params, fmt.Errorf("class has no parameters; this driver requires an addresses list")
+		return params, fmt.Errorf("class has no parameters; this driver requires parameters.pool")
 	}
-	if err := json.Unmarshal(raw.Raw, &params); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw.Raw, &fields); err != nil {
 		return params, fmt.Errorf("parsing class parameters: %w", err)
 	}
-	if len(params.Addresses) == 0 {
-		return params, fmt.Errorf("class parameters name no addresses")
+	if _, ok := fields["addresses"]; ok {
+		return params, fmt.Errorf("parameters.addresses is no longer supported: name an existing IPAddressPool in parameters.pool")
 	}
-	for _, cidr := range params.Addresses {
-		if _, err := netip.ParsePrefix(cidr); err != nil {
-			return params, fmt.Errorf("class parameter address %q: %w", cidr, err)
-		}
+	dec := json.NewDecoder(bytes.NewReader(raw.Raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&params); err != nil {
+		return params, fmt.Errorf("parsing class parameters: %w", err)
+	}
+	if params.Pool == "" {
+		return params, fmt.Errorf("class parameters name no pool")
 	}
 	return params, nil
 }
 
-// PoolName is the deterministic name of the MetalLB objects rendered for a
-// class.
-func PoolName(className string) string {
-	return "iad-" + className
+// PoolProblem reports why a MetalLB IPAddressPool cannot back a class, or ""
+// if it can. The pool must not auto-assign, so MetalLB hands its addresses
+// only to placeholders and pinned Services, and its serviceAllocation must
+// admit placeholders, which live in placeholderNS. MetalLB treats a missing
+// autoAssign as true.
+func PoolProblem(pool *unstructured.Unstructured, placeholderNS *corev1.Namespace) string {
+	autoAssign, found, err := unstructured.NestedBool(pool.Object, "spec", "autoAssign")
+	if err != nil || !found || autoAssign {
+		return fmt.Sprintf("IPAddressPool %s/%s auto-assigns; it must set autoAssign: false", pool.GetNamespace(), pool.GetName())
+	}
+	alloc, found, err := unstructured.NestedMap(pool.Object, "spec", "serviceAllocation")
+	if err != nil || !found {
+		return ""
+	}
+	if !admitsNamespace(alloc, placeholderNS) {
+		return fmt.Sprintf("IPAddressPool %s/%s serviceAllocation does not admit the placeholder namespace %s",
+			pool.GetNamespace(), pool.GetName(), placeholderNS.Name)
+	}
+	if !matchesAnySelector(alloc["serviceSelectors"], labels.Set{PlaceholderLabel: MarkerValue}) {
+		return fmt.Sprintf("IPAddressPool %s/%s serviceAllocation.serviceSelectors do not match placeholder Services",
+			pool.GetNamespace(), pool.GetName())
+	}
+	return ""
+}
+
+// admitsNamespace applies serviceAllocation's namespace rule as MetalLB
+// does: with neither namespaces nor namespaceSelectors every namespace is
+// admitted, otherwise the namespace must be listed or selected.
+func admitsNamespace(alloc map[string]any, ns *corev1.Namespace) bool {
+	names, _, _ := unstructured.NestedStringSlice(alloc, "namespaces")
+	selectors, _, _ := unstructured.NestedSlice(alloc, "namespaceSelectors")
+	if len(names) == 0 && len(selectors) == 0 {
+		return true
+	}
+	return slices.Contains(names, ns.Name) ||
+		(len(selectors) > 0 && matchesAnySelector(selectors, labels.Set(ns.Labels)))
+}
+
+// matchesAnySelector reports whether set matches one of the label
+// selectors; an empty or absent list matches everything.
+func matchesAnySelector(raw any, set labels.Set) bool {
+	list, _ := raw.([]any)
+	if len(list) == 0 {
+		return true
+	}
+	for _, item := range list {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		var ls metav1.LabelSelector
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(m, &ls); err != nil {
+			continue
+		}
+		if sel, err := metav1.LabelSelectorAsSelector(&ls); err == nil && sel.Matches(set) {
+			return true
+		}
+	}
+	return false
 }
 
 // FamilyOf reports the concrete address family of an IP, or "" if it does
@@ -150,10 +215,13 @@ func HoldPlaceholderName(addressName string) string {
 
 // NewPlaceholder builds a reservation placeholder: a selectorless
 // LoadBalancer Service that MetalLB assigns an address to but — having no
-// endpoints — never announces. pinIP empty means "allocate from the
-// class's pool"; non-empty pins the placeholder to re-hold that exact
-// address.
-func NewPlaceholder(name, namespace, className string, family localv1alpha1.AddressFamily, pinIP string) *corev1.Service {
+// endpoints — never announces. It draws from pool, the class's MetalLB
+// pool, and carries lbClass, the loadBalancerClass of the MetalLB instance
+// this driver fronts (empty for the cluster default). pinIP empty means
+// "allocate from the pool"; non-empty pins the placeholder to re-hold that
+// exact address. A pinned placeholder may leave pool empty: MetalLB assigns
+// a pinned address from whichever pool holds it.
+func NewPlaceholder(name, namespace, pool, lbClass string, family localv1alpha1.AddressFamily, pinIP string) *corev1.Service {
 	ipFamily := corev1.IPv4Protocol
 	if family == localv1alpha1.FamilyIPv6 {
 		ipFamily = corev1.IPv6Protocol
@@ -164,7 +232,6 @@ func NewPlaceholder(name, namespace, className string, family localv1alpha1.Addr
 			Namespace: namespace,
 			Labels:    map[string]string{PlaceholderLabel: MarkerValue},
 			Annotations: map[string]string{
-				MetalLBPoolAnnotation: PoolName(className),
 				// Placeholders hold reservations; the core must not
 				// auto-claim an address for them.
 				localv1alpha1.ServiceAutoClaimAnnotation: "false",
@@ -177,6 +244,12 @@ func NewPlaceholder(name, namespace, className string, family localv1alpha1.Addr
 			IPFamilyPolicy:                new(corev1.IPFamilyPolicySingleStack),
 			IPFamilies:                    []corev1.IPFamily{ipFamily},
 		},
+	}
+	if pool != "" {
+		svc.Annotations[MetalLBPoolAnnotation] = pool
+	}
+	if lbClass != "" {
+		svc.Spec.LoadBalancerClass = new(lbClass)
 	}
 	if pinIP != "" {
 		svc.Annotations[MetalLBPinAnnotation] = pinIP
