@@ -20,7 +20,6 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -48,35 +47,17 @@ func TestParseClassParameters(t *testing.T) {
 }
 
 func TestPoolProblem(t *testing.T) {
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "iad-ns", Labels: map[string]string{"role": "iad"}}}
-	pool := func(spec map[string]any) *unstructured.Unstructured {
-		u := &unstructured.Unstructured{Object: map[string]any{"spec": spec}}
-		u.SetNamespace("metallb-system")
-		u.SetName("reserved")
-		return u
-	}
-	selector := func(key, value string) []any {
-		return []any{map[string]any{"matchLabels": map[string]any{key: value}}}
-	}
-	cases := map[string]struct {
+	for name, tc := range map[string]struct {
 		spec map[string]any
 		ok   bool
 	}{
-		"autoAssign false":          {map[string]any{"autoAssign": false}, true},
-		"autoAssign absent":         {map[string]any{}, false},
-		"autoAssign true":           {map[string]any{"autoAssign": true}, false},
-		"namespace listed":          {map[string]any{"autoAssign": false, "serviceAllocation": map[string]any{"namespaces": []any{"iad-ns"}}}, true},
-		"namespace not listed":      {map[string]any{"autoAssign": false, "serviceAllocation": map[string]any{"namespaces": []any{"tenant-a"}}}, false},
-		"namespace selected":        {map[string]any{"autoAssign": false, "serviceAllocation": map[string]any{"namespaceSelectors": selector("role", "iad")}}, true},
-		"namespace not selected":    {map[string]any{"autoAssign": false, "serviceAllocation": map[string]any{"namespaceSelectors": selector("role", "tenant")}}, false},
-		"placeholders selected":     {map[string]any{"autoAssign": false, "serviceAllocation": map[string]any{"serviceSelectors": selector(PlaceholderLabel, MarkerValue)}}, true},
-		"placeholders not selected": {map[string]any{"autoAssign": false, "serviceAllocation": map[string]any{"serviceSelectors": selector("app", "web")}}, false},
-		"only priority set":         {map[string]any{"autoAssign": false, "serviceAllocation": map[string]any{"priority": int64(10)}}, true},
-	}
-	for name, tc := range cases {
+		"autoAssign false":  {map[string]any{"autoAssign": false}, true},
+		"autoAssign absent": {map[string]any{}, false},
+		"autoAssign true":   {map[string]any{"autoAssign": true}, false},
+	} {
 		t.Run(name, func(t *testing.T) {
-			problem := PoolProblem(pool(tc.spec), ns)
-			if (problem == "") != tc.ok {
+			pool := &unstructured.Unstructured{Object: map[string]any{"spec": tc.spec}}
+			if problem := PoolProblem(pool); (problem == "") != tc.ok {
 				t.Errorf("PoolProblem = %q, want usable=%v", problem, tc.ok)
 			}
 		})

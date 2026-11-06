@@ -54,11 +54,11 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return scheme
 }
 
-// testClient builds a fake client holding objs plus the placeholder
-// namespace and a usable MetalLB pool named testPool.
+// testClient builds a fake client holding objs plus a usable MetalLB pool
+// named testPool.
 func testClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
-	return bareTestClient(t, append([]client.Object{testNamespace(), metallbPool(false)}, objs...)...)
+	return bareTestClient(t, append([]client.Object{metallbPool(false)}, objs...)...)
 }
 
 // bareTestClient builds a fake client holding only objs.
@@ -82,10 +82,6 @@ const (
 	testPool      = "reserved"
 	testMetalLBNS = "metallb-system"
 )
-
-func testNamespace() *corev1.Namespace {
-	return &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: testPlaceholderNS}}
-}
 
 // metallbPool is the admin's IPAddressPool the test class names.
 func metallbPool(autoAssign bool) *unstructured.Unstructured {
@@ -181,7 +177,7 @@ func listPlaceholders(t *testing.T, c client.Client) []corev1.Service {
 
 func TestRefusedPoolGetsNoPlaceholder(t *testing.T) {
 	recorder := record.NewFakeRecorder(100)
-	c := bareTestClient(t, testNamespace(), metallbPool(true), iadClass(), stampedClaim(localv1alpha1.FamilyIPv4))
+	c := bareTestClient(t, metallbPool(true), iadClass(), stampedClaim(localv1alpha1.FamilyIPv4))
 	r := claimRec(c)
 	r.Recorder = recorder
 	reconcileOnce(t, r, "tenant-a", "web")
@@ -198,7 +194,7 @@ func TestRefusedPoolStillRecordsAnAssignedPlaceholder(t *testing.T) {
 	// A placeholder created before the pool went bad holds an address
 	// MetalLB assigned; it is recorded rather than stranded.
 	claim := stampedClaim(localv1alpha1.FamilyIPv4)
-	c := bareTestClient(t, testNamespace(), metallbPool(true), iadClass(), claim,
+	c := bareTestClient(t, metallbPool(true), iadClass(), claim,
 		allocationPlaceholder(claim, localv1alpha1.FamilyIPv4, "203.0.113.7"))
 	reconcileOnce(t, claimRec(c), "tenant-a", "web")
 

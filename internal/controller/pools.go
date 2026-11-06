@@ -22,7 +22,6 @@ import (
 	"slices"
 	"sort"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -39,9 +38,9 @@ var ipAddressPoolGVK = schema.GroupVersionKind{
 
 // classPool resolves the MetalLB pool a class of this driver names. A
 // non-empty problem says why the class cannot back new reservations: its
-// parameters are invalid, the pool is missing or unfit (driver.PoolProblem),
-// or another class names the same pool. The driver never edits the pool.
-func classPool(ctx context.Context, c client.Reader, metallbNS, placeholderNS string, class *localv1alpha1.IPAddressClass) (pool, problem string, err error) {
+// parameters are invalid, the pool is missing or auto-assigns
+// (driver.PoolProblem), or another class names the same pool. The driver never edits the pool.
+func classPool(ctx context.Context, c client.Reader, metallbNS string, class *localv1alpha1.IPAddressClass) (pool, problem string, err error) {
 	params, err := driver.ParseClassParameters(class.Spec.Parameters)
 	if err != nil {
 		return "", err.Error(), nil
@@ -54,11 +53,7 @@ func classPool(ctx context.Context, c client.Reader, metallbNS, placeholderNS st
 		}
 		return "", "", err
 	}
-	ns := &corev1.Namespace{}
-	if err := c.Get(ctx, types.NamespacedName{Name: placeholderNS}, ns); err != nil {
-		return "", "", err
-	}
-	if problem := driver.PoolProblem(obj, ns); problem != "" {
+	if problem := driver.PoolProblem(obj); problem != "" {
 		return params.Pool, problem, nil
 	}
 	others, err := classesNamingPool(ctx, c, params.Pool)

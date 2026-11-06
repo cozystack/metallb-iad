@@ -33,10 +33,9 @@ func classRec(c client.Client, lbClass string) (*ClassReconciler, *record.FakeRe
 	recorder := record.NewFakeRecorder(100)
 	return &ClassReconciler{
 		Client: c, Scheme: c.Scheme(),
-		Recorder:             recorder,
-		MetalLBNamespace:     testMetalLBNS,
-		PlaceholderNamespace: testPlaceholderNS,
-		LoadBalancerClass:    lbClass,
+		Recorder:          recorder,
+		MetalLBNamespace:  testMetalLBNS,
+		LoadBalancerClass: lbClass,
 	}, recorder
 }
 
@@ -77,8 +76,8 @@ func TestClassPoolProblemsAreReported(t *testing.T) {
 	twin := iadClass()
 	twin.Name = "public-twin"
 	cases := map[string]client.Client{
-		"pool missing":      bareTestClient(t, testNamespace(), iadClass()),
-		"pool auto-assigns": bareTestClient(t, testNamespace(), metallbPool(true), iadClass()),
+		"pool missing":      bareTestClient(t, iadClass()),
+		"pool auto-assigns": bareTestClient(t, metallbPool(true), iadClass()),
 		"old parameters":    testClient(t, oldParams),
 		"pool named twice":  testClient(t, iadClass(), twin),
 	}

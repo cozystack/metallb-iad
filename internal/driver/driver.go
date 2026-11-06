@@ -25,13 +25,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
-	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -117,63 +115,14 @@ func ParseClassParameters(raw *runtime.RawExtension) (ClassParameters, error) {
 
 // PoolProblem reports why a MetalLB IPAddressPool cannot back a class, or ""
 // if it can. The pool must not auto-assign, so MetalLB hands its addresses
-// only to placeholders and pinned Services, and its serviceAllocation must
-// admit placeholders, which live in placeholderNS. MetalLB treats a missing
+// only to placeholders and pinned Services. MetalLB treats a missing
 // autoAssign as true.
-func PoolProblem(pool *unstructured.Unstructured, placeholderNS *corev1.Namespace) string {
+func PoolProblem(pool *unstructured.Unstructured) string {
 	autoAssign, found, err := unstructured.NestedBool(pool.Object, "spec", "autoAssign")
 	if err != nil || !found || autoAssign {
 		return fmt.Sprintf("IPAddressPool %s/%s auto-assigns; it must set autoAssign: false", pool.GetNamespace(), pool.GetName())
 	}
-	alloc, found, err := unstructured.NestedMap(pool.Object, "spec", "serviceAllocation")
-	if err != nil || !found {
-		return ""
-	}
-	if !admitsNamespace(alloc, placeholderNS) {
-		return fmt.Sprintf("IPAddressPool %s/%s serviceAllocation does not admit the placeholder namespace %s",
-			pool.GetNamespace(), pool.GetName(), placeholderNS.Name)
-	}
-	if !matchesAnySelector(alloc["serviceSelectors"], labels.Set{PlaceholderLabel: MarkerValue}) {
-		return fmt.Sprintf("IPAddressPool %s/%s serviceAllocation.serviceSelectors do not match placeholder Services",
-			pool.GetNamespace(), pool.GetName())
-	}
 	return ""
-}
-
-// admitsNamespace applies serviceAllocation's namespace rule as MetalLB
-// does: with neither namespaces nor namespaceSelectors every namespace is
-// admitted, otherwise the namespace must be listed or selected.
-func admitsNamespace(alloc map[string]any, ns *corev1.Namespace) bool {
-	names, _, _ := unstructured.NestedStringSlice(alloc, "namespaces")
-	selectors, _, _ := unstructured.NestedSlice(alloc, "namespaceSelectors")
-	if len(names) == 0 && len(selectors) == 0 {
-		return true
-	}
-	return slices.Contains(names, ns.Name) ||
-		(len(selectors) > 0 && matchesAnySelector(selectors, labels.Set(ns.Labels)))
-}
-
-// matchesAnySelector reports whether set matches one of the label
-// selectors; an empty or absent list matches everything.
-func matchesAnySelector(raw any, set labels.Set) bool {
-	list, _ := raw.([]any)
-	if len(list) == 0 {
-		return true
-	}
-	for _, item := range list {
-		m, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		var ls metav1.LabelSelector
-		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(m, &ls); err != nil {
-			continue
-		}
-		if sel, err := metav1.LabelSelectorAsSelector(&ls); err == nil && sel.Matches(set) {
-			return true
-		}
-	}
-	return false
 }
 
 // FamilyOf reports the concrete address family of an IP, or "" if it does

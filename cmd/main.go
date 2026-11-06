@@ -234,12 +234,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err = (&controller.ClassReconciler{
-		Client:               mgr.GetClient(),
-		Scheme:               mgr.GetScheme(),
-		Recorder:             mgr.GetEventRecorderFor("iad-class-controller"),
-		MetalLBNamespace:     metallbNamespace,
-		PlaceholderNamespace: placeholderNamespace,
-		LoadBalancerClass:    loadBalancerClass,
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		Recorder:          mgr.GetEventRecorderFor("iad-class-controller"),
+		MetalLBNamespace:  metallbNamespace,
+		LoadBalancerClass: loadBalancerClass,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Class")
 		os.Exit(1)

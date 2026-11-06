@@ -63,7 +63,6 @@ type ClaimReconciler struct {
 // +kubebuilder:rbac:groups=local.sdn.cozystack.io,resources=ipaddressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=metallb.io,resources=ipaddresspools,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile provisions reservations for a pending claim of this driver.
@@ -117,7 +116,7 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, r.cleanupOrphanPlaceholders(ctx, req.NamespacedName)
 	}
 
-	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, r.PlaceholderNamespace, class)
+	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, class)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

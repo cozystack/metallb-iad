@@ -116,14 +116,18 @@ event on the class and on each claim it would provision, when:
 - the pool auto-assigns. MetalLB treats an absent `autoAssign` as true, so
   the pool must set `autoAssign: false`; only placeholders, by naming the
   pool, and Services the driver pins draw from it;
-- the pool's `serviceAllocation` does not admit placeholders: the
-  placeholder namespace must be listed or selected, and any
-  `serviceSelectors` must match the placeholder label;
 - another class of this driver names the same pool. Every class naming it
   is refused.
 
 A refusal blocks only new allocation placeholders. A placeholder MetalLB
 has already assigned is still recorded, and existing addresses stay held.
+
+MetalLB applies a pool's `serviceAllocation` to pinned Services too, so a
+pool that sets one must admit the placeholder namespace and every
+namespace whose Services name claims of the class; `serviceSelectors` must
+match both. The driver does not check this yet: it belongs to the
+proposal's §5 serviceability check, which tests a consumer before the hold
+is released.
 
 The driver reads `IPAddressPool` as an unstructured object. MetalLB's API
 types have no module of their own: importing them adds MetalLB's root

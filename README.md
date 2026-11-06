@@ -34,6 +34,9 @@ spec:
 The class names MetalLB configuration and does not restate it: the admin
 creates the pool and its advertisement in MetalLB's own terms, and the driver
 only reads them.
+A pool that sets `serviceAllocation` must admit the placeholder namespace and
+every namespace whose Services name claims of the class; the driver does not
+check this yet.
 
 MetalLB has no native reservation concept, so the driver manufactures
 one: **a reservation is held by a placeholder Service** — selectorless,
@@ -51,8 +54,8 @@ Four controllers implement the driver side of the contract:
   driver implements **Allocate + Pin**, not Adopt.
 - **Class** — checks each served class against the pool it names and
   reports, as `PoolRefused` events, a pool that is missing, auto-assigns,
-  does not admit placeholders, or is named by another class. Claims of a
-  refused class get no new reservations.
+  or is named by another class. Claims of a refused class get no new
+  reservations.
 - **Service** — the association layer, a separate and reversible act. A
   tenant annotates a Service with
   `local.sdn.cozystack.io/ip-address-claim: <claim>` (same namespace, by

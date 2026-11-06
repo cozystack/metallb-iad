@@ -43,9 +43,6 @@ type ClassReconciler struct {
 	Recorder record.EventRecorder
 	// MetalLBNamespace is where MetalLB's configuration resources live.
 	MetalLBNamespace string
-	// PlaceholderNamespace is where reservation placeholders live; the
-	// pool must admit it.
-	PlaceholderNamespace string
 	// LoadBalancerClass is that of the MetalLB instance this driver fronts;
 	// empty for the cluster default.
 	LoadBalancerClass string
@@ -53,7 +50,6 @@ type ClassReconciler struct {
 
 // +kubebuilder:rbac:groups=local.sdn.cozystack.io,resources=ipaddressclasses,verbs=get;list;watch
 // +kubebuilder:rbac:groups=metallb.io,resources=ipaddresspools,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile checks one class.
@@ -68,7 +64,7 @@ func (r *ClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, r.PlaceholderNamespace, class)
+	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, class)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
