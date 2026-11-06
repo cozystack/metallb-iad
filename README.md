@@ -96,6 +96,22 @@ namespace.
 The driver image is published as `ghcr.io/cozystack/metallb-iad:main` (plus
 `main-<sha>` and semver tags) by the release workflow on every push to main.
 
+### Reserving part of an existing pool
+
+A class cannot name a pool with `autoAssign: true`, and MetalLB rejects
+pools whose ranges overlap. To reserve part of a range that a shared pool
+auto-assigns today, split it:
+
+1. Shrink the shared pool so it no longer covers the part to reserve.
+   MetalLB withdraws any assignment that falls outside its pool, so first
+   check `kubectl get svc -A` for Services holding addresses in that part.
+   Leave those addresses in the shared pool, or adopt them first: create
+   an `IPAddress` pre-bound to a claim (`spec.claimRef`) and name the claim
+   on the Service.
+2. Create a pool for the reserved part with `autoAssign: false`, and an
+   `L2Advertisement` or `BGPAdvertisement` selecting it.
+3. Create the class with `parameters.pool` naming the new pool.
+
 ### Migrating classes that listed addresses
 
 Earlier releases took `parameters.addresses` and rendered an
