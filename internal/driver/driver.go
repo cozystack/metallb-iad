@@ -31,7 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
-	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
+	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 )
 
 const (
@@ -165,6 +165,9 @@ func NewPlaceholder(name, namespace, className string, family localv1alpha1.Addr
 			Labels:    map[string]string{PlaceholderLabel: MarkerValue},
 			Annotations: map[string]string{
 				MetalLBPoolAnnotation: PoolName(className),
+				// Placeholders hold reservations; the core must not
+				// auto-claim an address for them.
+				localv1alpha1.ServiceAutoClaimAnnotation: "false",
 			},
 		},
 		Spec: corev1.ServiceSpec{

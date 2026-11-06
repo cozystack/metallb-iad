@@ -32,8 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 	"github.com/cozystack/metallb-iad/internal/driver"
-	localv1alpha1 "github.com/lllamnyp/address-controller/api/v1alpha1"
 )
 
 // ServiceReconciler is the association half of the driver — the separate,

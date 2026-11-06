@@ -67,7 +67,9 @@ one single-stack placeholder per family):
    drawing from the class's pool by explicit pool selection
    (`metallb.io/address-pool` — the sanctioned way past
    `autoAssign: false`). `allocateLoadBalancerNodePorts: false` keeps it
-   from consuming node ports.
+   from consuming node ports, and `local.sdn.cozystack.io/auto-claim:
+   "false"` keeps the core from auto-claiming an address for it. Every
+   placeholder carries both.
 2. **Observe.** Wait for MetalLB to assign (`status.loadBalancer
    .ingress`). Pool exhaustion simply leaves the placeholder unassigned —
    MetalLB reports why on the placeholder, the claim stays honestly
