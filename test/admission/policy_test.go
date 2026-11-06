@@ -91,6 +91,19 @@ func TestAdmissionPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	const (
+		pin       = "metallb.io/loadBalancerIPs"
+		pool      = "metallb.io/address-pool"
+		share     = "metallb.io/allow-shared-ip"
+		oldPin    = "metallb.universe.tf/loadBalancerIPs"
+		oldPool   = "metallb.universe.tf/address-pool"
+		oldShare  = "metallb.universe.tf/allow-shared-ip"
+		marker    = "metallb.drivers.local.sdn.cozystack.io/pinned"
+		claimRef  = "local.sdn.cozystack.io/ip-address-claim"
+		addr      = "203.0.113.8"
+		otherAddr = "203.0.113.9"
+	)
+	relabel := map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": "web"}}}
 	cases := []struct {
 		name  string
 		as    client.Client
@@ -98,23 +111,23 @@ func TestAdmissionPolicy(t *testing.T) {
 		admit bool
 	}{
 		{"tenant creates a plain Service", alice, createSvc(tenantNS, nil, ""), true},
-		{"tenant names a claim", alice, createSvc(tenantNS, map[string]string{"local.sdn.cozystack.io/ip-address-claim": "web"}, ""), true},
-		{"tenant pins an address", alice, createSvc(tenantNS, map[string]string{"metallb.io/loadBalancerIPs": "203.0.113.8"}, ""), false},
-		{"tenant selects a pool", alice, createSvc(tenantNS, map[string]string{"metallb.io/address-pool": "reserved"}, ""), false},
-		{"tenant shares an address", alice, createSvc(tenantNS, map[string]string{"metallb.io/allow-shared-ip": "k"}, ""), false},
-		{"tenant pins through the legacy prefix", alice, createSvc(tenantNS, map[string]string{"metallb.universe.tf/loadBalancerIPs": "203.0.113.8"}, ""), false},
-		{"tenant selects a pool through the legacy prefix", alice, createSvc(tenantNS, map[string]string{"metallb.universe.tf/address-pool": "reserved"}, ""), false},
-		{"tenant shares through the legacy prefix", alice, createSvc(tenantNS, map[string]string{"metallb.universe.tf/allow-shared-ip": "k"}, ""), false},
-		{"tenant sets spec.loadBalancerIP", alice, createSvc(tenantNS, nil, "203.0.113.8"), false},
-		{"tenant forges the driver's pinned marker", alice, createSvc(tenantNS, map[string]string{"metallb.drivers.local.sdn.cozystack.io/pinned": "true"}, ""), false},
-		{"tenant pins outside the bound namespaces", alice, createSvc(otherNS, map[string]string{"metallb.io/loadBalancerIPs": "203.0.113.8"}, ""), true},
-		{"tenant edits a pinned Service, pin untouched", alice, patchPinned(map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": "web"}}}), true},
-		{"tenant changes the pin", alice, patchPinned(annotation("metallb.io/loadBalancerIPs", "203.0.113.9")), false},
-		{"tenant removes the pin", alice, patchPinned(annotation("metallb.io/loadBalancerIPs", nil)), false},
-		{"tenant removes the pinned marker", alice, patchPinned(annotation("metallb.drivers.local.sdn.cozystack.io/pinned", nil)), false},
-		{"driver pins a tenant Service", driver, createSvc(tenantNS, map[string]string{"metallb.io/loadBalancerIPs": "203.0.113.8", "metallb.drivers.local.sdn.cozystack.io/pinned": "true"}, ""), true},
-		{"driver withdraws its pin", driver, patchPinned(annotation("metallb.io/loadBalancerIPs", nil)), true},
-		{"admin selects a pool", admin, createSvc(tenantNS, map[string]string{"metallb.io/address-pool": "reserved"}, ""), true},
+		{"tenant names a claim", alice, createSvc(tenantNS, ann(claimRef, "web"), ""), true},
+		{"tenant pins an address", alice, createSvc(tenantNS, ann(pin, addr), ""), false},
+		{"tenant selects a pool", alice, createSvc(tenantNS, ann(pool, "reserved"), ""), false},
+		{"tenant shares an address", alice, createSvc(tenantNS, ann(share, "k"), ""), false},
+		{"tenant pins through the legacy prefix", alice, createSvc(tenantNS, ann(oldPin, addr), ""), false},
+		{"tenant selects a pool through the legacy prefix", alice, createSvc(tenantNS, ann(oldPool, "reserved"), ""), false},
+		{"tenant shares through the legacy prefix", alice, createSvc(tenantNS, ann(oldShare, "k"), ""), false},
+		{"tenant sets spec.loadBalancerIP", alice, createSvc(tenantNS, nil, addr), false},
+		{"tenant forges the driver's pinned marker", alice, createSvc(tenantNS, ann(marker, "true"), ""), false},
+		{"tenant pins outside the bound namespaces", alice, createSvc(otherNS, ann(pin, addr), ""), true},
+		{"tenant edits a pinned Service, pin untouched", alice, patchPinned(relabel), true},
+		{"tenant changes the pin", alice, patchPinned(annotation(pin, otherAddr)), false},
+		{"tenant removes the pin", alice, patchPinned(annotation(pin, nil)), false},
+		{"tenant removes the pinned marker", alice, patchPinned(annotation(marker, nil)), false},
+		{"driver pins a tenant Service", driver, createSvc(tenantNS, map[string]string{pin: addr, marker: "true"}, ""), true},
+		{"driver withdraws its pin", driver, patchPinned(annotation(pin, nil)), true},
+		{"admin selects a pool", admin, createSvc(tenantNS, ann(pool, "reserved"), ""), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -239,6 +252,8 @@ func patchPinned(patch map[string]any) func(client.Client) error {
 		return c.Patch(context.Background(), svc, client.RawPatch(types.MergePatchType, mustJSON(patch)), client.DryRunAll)
 	}
 }
+
+func ann(key, value string) map[string]string { return map[string]string{key: value} }
 
 // annotation builds a merge patch that sets one annotation, or removes it
 // when value is nil.
