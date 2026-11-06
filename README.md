@@ -100,16 +100,32 @@ make docker-build docker-push   # publish ghcr.io/cozystack/metallb-iad:<git-sha
 make helm-package               # lint and package the chart into dist/
 ```
 
+## Admission policy
+
+The chart can install a `ValidatingAdmissionPolicy` (`admissionPolicy.enabled`,
+off by default) that reserves the Service fields steering MetalLB at a
+specific address or pool to the driver and allowlisted principals: the
+`metallb.io/` and legacy `metallb.universe.tf/` `loadBalancerIPs`,
+`address-pool` and `allow-shared-ip` annotations, `spec.loadBalancerIP`,
+and the driver's `pinned` marker. Tenants then get an address only by
+naming an `IPAddressClaim`. Writes that leave these fields unchanged are
+always admitted, so controllers that rewrite whole Services keep working.
+
+- `admissionPolicy.namespaceSelector` scopes the binding. Scope it to tenant
+  namespaces when platform components elsewhere set these annotations
+  themselves; Cozystack's kube-ovn chart, for one, sets `allow-shared-ip`.
+- `admissionPolicy.allowedUsernames` / `allowedGroups` exempt principals
+  besides the driver's ServiceAccount. The defaults cover `system:masters`
+  and kubeadm's `kubeadm:cluster-admins`.
+- `admissionPolicy.validationActions: [Warn, Audit]` reports would-be denials
+  without enforcing them.
+
 ## Not implemented (deliberately, for now)
 
 - The **shared handoff**: closing the brief unheld window during
   (dis)association with a sequence of `metallb.io/allow-shared-ip`
   Service mutations, where the workload's shape permits it. Planned as an
   opportunistic upgrade over the gap handoff (design doc §5).
-- The `ValidatingAdmissionPolicy` that forbids tenants writing raw MetalLB
-  pool/pin annotations (design §Security layer 1). It belongs in the same
-  release as any real deployment of this driver, but is deployment
-  configuration, not controller code.
 - Backwards inventory reconciliation (design §6): importing addresses an
   eager MetalLB handed to plain Services into `IPAddress` objects after the
   fact.
