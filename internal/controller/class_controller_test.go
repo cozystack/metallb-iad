@@ -18,65 +18,101 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 )
 
-func TestClassRendersPoolAndAdvertisement(t *testing.T) {
-	c := testClient(t, iadClass())
-	r := &ClassReconciler{
+func classRec(c client.Client, lbClass string) (*ClassReconciler, *record.FakeRecorder) {
+	recorder := record.NewFakeRecorder(100)
+	return &ClassReconciler{
 		Client: c, Scheme: c.Scheme(),
-		Recorder:         record.NewFakeRecorder(100),
-		MetalLBNamespace: "metallb-system",
+		Recorder:          recorder,
+		MetalLBNamespace:  testMetalLBNS,
+		LoadBalancerClass: lbClass,
+	}, recorder
+}
+
+// drainEvents returns the events recorded so far.
+func drainEvents(recorder *record.FakeRecorder) []string {
+	var events []string
+	for {
+		select {
+		case e := <-recorder.Events:
+			events = append(events, e)
+		default:
+			return events
+		}
 	}
+}
+
+func TestClassWithUsablePoolIsQuiet(t *testing.T) {
+	c := testClient(t, iadClass())
+	r, recorder := classRec(c, "")
 	reconcileOnce(t, r, "", "public")
 
-	pool := &unstructured.Unstructured{}
-	pool.SetGroupVersionKind(ipAddressPoolGVK)
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "metallb-system", Name: "iad-public"}, pool); err != nil {
-		t.Fatalf("IPAddressPool not rendered: %v", err)
+	if events := drainEvents(recorder); len(events) != 0 {
+		t.Errorf("events = %v, want none for a usable pool", events)
 	}
-	autoAssign, found, err := unstructured.NestedBool(pool.Object, "spec", "autoAssign")
-	if err != nil || !found || autoAssign {
-		t.Errorf("autoAssign = %v/%v/%v, want explicit false", autoAssign, found, err)
+	pools := &unstructured.UnstructuredList{}
+	pools.SetGroupVersionKind(ipAddressPoolGVK.GroupVersion().WithKind("IPAddressPoolList"))
+	if err := c.List(context.Background(), pools); err != nil {
+		t.Fatal(err)
 	}
-	addresses, _, _ := unstructured.NestedStringSlice(pool.Object, "spec", "addresses")
-	if len(addresses) != 2 || addresses[0] != "203.0.113.0/29" {
-		t.Errorf("pool addresses = %v", addresses)
+	if len(pools.Items) != 1 || pools.Items[0].GetName() != testPool {
+		t.Errorf("pools = %d, want only the admin's %q: the driver must not render one", len(pools.Items), testPool)
 	}
-	if owners := pool.GetOwnerReferences(); len(owners) != 1 || owners[0].Name != "public" {
-		t.Errorf("ownerReferences = %+v, want the class", owners)
-	}
+}
 
-	adv := &unstructured.Unstructured{}
-	adv.SetGroupVersionKind(l2AdvertisementGVK)
-	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "metallb-system", Name: "iad-public"}, adv); err != nil {
-		t.Fatalf("L2Advertisement not rendered: %v", err)
+func TestClassPoolProblemsAreReported(t *testing.T) {
+	oldParams := iadClass()
+	oldParams.Spec.Parameters = &runtime.RawExtension{Raw: []byte(`{"addresses":["203.0.113.0/29"]}`)}
+	twin := iadClass()
+	twin.Name = "public-twin"
+	cases := map[string]client.Client{
+		"pool missing":      bareTestClient(t, iadClass()),
+		"pool auto-assigns": bareTestClient(t, metallbPool(true), iadClass()),
+		"old parameters":    testClient(t, oldParams),
+		"pool named twice":  testClient(t, iadClass(), twin),
 	}
-	pools, _, _ := unstructured.NestedStringSlice(adv.Object, "spec", "ipAddressPools")
-	if len(pools) != 1 || pools[0] != "iad-public" {
-		t.Errorf("advertisement pools = %v, want [iad-public]", pools)
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			r, recorder := classRec(c, "")
+			reconcileOnce(t, r, "", "public")
+
+			events := drainEvents(recorder)
+			if len(events) != 1 || !strings.Contains(events[0], "PoolRefused") {
+				t.Errorf("events = %v, want one PoolRefused", events)
+			}
+		})
+	}
+}
+
+func TestAutoClaimClassOfANonDefaultInstanceWarns(t *testing.T) {
+	class := iadClass()
+	class.Annotations = map[string]string{localv1alpha1.IsAutoClaimClassAnnotation: "true"}
+	r, recorder := classRec(testClient(t, class), "metallb.io/reserved")
+	reconcileOnce(t, r, "", "public")
+
+	events := drainEvents(recorder)
+	if len(events) != 1 || !strings.Contains(events[0], "AutoClaimUnservable") {
+		t.Errorf("events = %v, want one AutoClaimUnservable", events)
 	}
 }
 
 func TestClassOfAnotherProvisionerIsIgnored(t *testing.T) {
 	class := iadClass()
 	class.Spec.Provisioner = "someone.else.example.com"
-	c := testClient(t, class)
-	r := &ClassReconciler{
-		Client: c, Scheme: c.Scheme(),
-		Recorder:         record.NewFakeRecorder(100),
-		MetalLBNamespace: "metallb-system",
-	}
+	r, recorder := classRec(bareTestClient(t, class), "")
 	reconcileOnce(t, r, "", "public")
 
-	pool := &unstructured.Unstructured{}
-	pool.SetGroupVersionKind(ipAddressPoolGVK)
-	err := c.Get(context.Background(), types.NamespacedName{Namespace: "metallb-system", Name: "iad-public"}, pool)
-	if err == nil {
-		t.Error("pool rendered for another driver's class")
+	if events := drainEvents(recorder); len(events) != 0 {
+		t.Errorf("events = %v, want none for another driver's class", events)
 	}
 }

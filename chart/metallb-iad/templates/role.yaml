@@ -68,12 +68,7 @@ rules:
   - metallb.io
   resources:
   - ipaddresspools
-  - l2advertisements
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch

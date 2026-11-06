@@ -20,27 +20,47 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 )
 
 func TestParseClassParameters(t *testing.T) {
-	good := &runtime.RawExtension{Raw: []byte(`{"addresses":["203.0.113.0/24"]}`)}
-	if _, err := ParseClassParameters(good); err != nil {
-		t.Errorf("valid parameters rejected: %v", err)
+	good := &runtime.RawExtension{Raw: []byte(`{"pool":"reserved"}`)}
+	if params, err := ParseClassParameters(good); err != nil || params.Pool != "reserved" {
+		t.Errorf("valid parameters: pool %q, err %v", params.Pool, err)
 	}
 	for name, raw := range map[string]*runtime.RawExtension{
-		"nil":       nil,
-		"empty":     {Raw: []byte(`{}`)},
-		"not-cidr":  {Raw: []byte(`{"addresses":["not-a-cidr"]}`)},
-		"bare-ip":   {Raw: []byte(`{"addresses":["203.0.113.7"]}`)},
-		"non-json":  {Raw: []byte(`addresses: [x]`)},
-		"wrongtype": {Raw: []byte(`{"addresses":"203.0.113.0/24"}`)},
+		"nil":           nil,
+		"empty":         {Raw: []byte(`{}`)},
+		"empty pool":    {Raw: []byte(`{"pool":""}`)},
+		"old addresses": {Raw: []byte(`{"addresses":["203.0.113.0/24"]}`)},
+		"unknown field": {Raw: []byte(`{"pool":"reserved","range":"x"}`)},
+		"non-json":      {Raw: []byte(`pool: reserved`)},
+		"wrong type":    {Raw: []byte(`{"pool":7}`)},
 	} {
 		if _, err := ParseClassParameters(raw); err == nil {
 			t.Errorf("%s parameters accepted, want error", name)
 		}
+	}
+}
+
+func TestPoolProblem(t *testing.T) {
+	for name, tc := range map[string]struct {
+		spec map[string]any
+		ok   bool
+	}{
+		"autoAssign false":  {map[string]any{"autoAssign": false}, true},
+		"autoAssign absent": {map[string]any{}, false},
+		"autoAssign true":   {map[string]any{"autoAssign": true}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pool := &unstructured.Unstructured{Object: map[string]any{"spec": tc.spec}}
+			if problem := PoolProblem(pool); (problem == "") != tc.ok {
+				t.Errorf("PoolProblem = %q, want usable=%v", problem, tc.ok)
+			}
+		})
 	}
 }
 
@@ -56,8 +76,8 @@ func TestAddressObjectName(t *testing.T) {
 }
 
 func TestNewPlaceholderForAllocation(t *testing.T) {
-	svc := NewPlaceholder("iad-uid-v4", "iad-ns", "public", localv1alpha1.FamilyIPv4, "")
-	if svc.Annotations[MetalLBPoolAnnotation] != "iad-public" {
+	svc := NewPlaceholder("iad-uid-v4", "iad-ns", "reserved", "", localv1alpha1.FamilyIPv4, "")
+	if svc.Annotations[MetalLBPoolAnnotation] != "reserved" {
 		t.Errorf("pool annotation = %q", svc.Annotations[MetalLBPoolAnnotation])
 	}
 	if _, pinned := svc.Annotations[MetalLBPinAnnotation]; pinned {
@@ -72,6 +92,9 @@ func TestNewPlaceholderForAllocation(t *testing.T) {
 	if svc.Spec.Selector != nil {
 		t.Error("placeholder must be selectorless so it has no endpoints and is never announced")
 	}
+	if svc.Spec.LoadBalancerClass != nil {
+		t.Errorf("loadBalancerClass = %q, want none for the default implementation", *svc.Spec.LoadBalancerClass)
+	}
 	if svc.Spec.AllocateLoadBalancerNodePorts == nil || *svc.Spec.AllocateLoadBalancerNodePorts {
 		t.Error("placeholder must not consume node ports")
 	}
@@ -81,7 +104,7 @@ func TestNewPlaceholderForAllocation(t *testing.T) {
 }
 
 func TestNewPlaceholderForHold(t *testing.T) {
-	svc := NewPlaceholder("iad-ip-2001-db8--7", "iad-ns", "public", localv1alpha1.FamilyIPv6, "2001:db8::7")
+	svc := NewPlaceholder("iad-ip-2001-db8--7", "iad-ns", "", "metallb.io/reserved", localv1alpha1.FamilyIPv6, "2001:db8::7")
 	if svc.Annotations[MetalLBPinAnnotation] != "2001:db8::7" {
 		t.Errorf("pin annotation = %q, want the held address", svc.Annotations[MetalLBPinAnnotation])
 	}
@@ -90,6 +113,12 @@ func TestNewPlaceholderForHold(t *testing.T) {
 	}
 	if len(svc.Spec.IPFamilies) != 1 || svc.Spec.IPFamilies[0] != corev1.IPv6Protocol {
 		t.Errorf("ipFamilies = %v, want [IPv6]", svc.Spec.IPFamilies)
+	}
+	if _, named := svc.Annotations[MetalLBPoolAnnotation]; named {
+		t.Error("pool annotation set although no pool was given")
+	}
+	if svc.Spec.LoadBalancerClass == nil || *svc.Spec.LoadBalancerClass != "metallb.io/reserved" {
+		t.Errorf("loadBalancerClass = %v, want the driver's", svc.Spec.LoadBalancerClass)
 	}
 }
 
