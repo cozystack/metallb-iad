@@ -5,7 +5,9 @@ go 1.26
 godebug default=go1.23
 
 require (
-	github.com/cozystack/address-controller v0.1.1-0.20261030085920-530646e40225
+	// TODO: pseudo-version of address-controller main (90e65ca); move to the
+	// v0.2.0 tag once cozystack/address-controller#17 merges and v0.2.0 is tagged.
+	github.com/cozystack/address-controller v0.1.1-0.20261113144957-90e65ca4b42b
 	k8s.io/api v0.32.0
 	k8s.io/apimachinery v0.32.0
 	k8s.io/client-go v0.32.0
