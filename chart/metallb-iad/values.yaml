@@ -3,9 +3,14 @@ image: ghcr.io/cozystack/metallb-iad:main
 imagePullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# Namespace MetalLB is installed in (where the rendered IPAddressPool /
-# L2Advertisement objects go).
+# Namespace MetalLB is installed in. The IPAddressPools that classes name
+# (parameters.pool) are looked up here.
 metallbNamespace: metallb-system
+
+# The --lb-class of the MetalLB instance this driver fronts. Empty for a
+# MetalLB that serves Services without a loadBalancerClass, the cluster
+# default. Placeholders carry it as spec.loadBalancerClass.
+loadBalancerClass: ""
 
 # Namespace the reservation placeholder Services live in. Empty means the
 # release namespace. Tenants must have no write access to it: a Service

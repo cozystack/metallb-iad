@@ -61,7 +61,7 @@ func boundClaimWithAddress() (*localv1alpha1.IPAddressClaim, *localv1alpha1.IPAd
 func holdPlaceholderFor(addr *localv1alpha1.IPAddress) *corev1.Service {
 	return driver.NewPlaceholder(
 		driver.HoldPlaceholderName(addr.Name), testPlaceholderNS,
-		addr.Spec.ClassName, driver.FamilyOf(addr.Spec.Address), addr.Spec.Address)
+		testPool, "", driver.FamilyOf(addr.Spec.Address), addr.Spec.Address)
 }
 
 func lbService(name string, annotations map[string]string) *corev1.Service {

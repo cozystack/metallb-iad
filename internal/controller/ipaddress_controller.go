@@ -46,6 +46,9 @@ type IPAddressReconciler struct {
 	Recorder record.EventRecorder
 	// PlaceholderNamespace is where reservation placeholders live.
 	PlaceholderNamespace string
+	// LoadBalancerClass is that of the MetalLB instance this driver fronts;
+	// placeholders carry it. Empty for the cluster default.
+	LoadBalancerClass string
 }
 
 // +kubebuilder:rbac:groups=local.sdn.cozystack.io,resources=ipaddresses,verbs=get;list;watch;update;patch;delete
@@ -147,7 +150,7 @@ func (r *IPAddressReconciler) ensureHold(ctx context.Context, addr *localv1alpha
 	}
 	placeholder := driver.NewPlaceholder(
 		driver.HoldPlaceholderName(addr.Name), r.PlaceholderNamespace,
-		addr.Spec.ClassName, driver.FamilyOf(addr.Spec.Address), addr.Spec.Address)
+		r.holdPool(ctx, addr), r.LoadBalancerClass, driver.FamilyOf(addr.Spec.Address), addr.Spec.Address)
 	if err := controllerutil.SetOwnerReference(addr, placeholder, r.Scheme); err != nil {
 		return err
 	}
@@ -157,6 +160,22 @@ func (r *IPAddressReconciler) ensureHold(ctx context.Context, addr *localv1alpha
 	r.Recorder.Eventf(addr, "Normal", "Held",
 		"placeholder %s re-holds %s in MetalLB", placeholder.Name, addr.Spec.Address)
 	return nil
+}
+
+// holdPool is the pool a hold placeholder names: the one the address's
+// class names, or "" if its parameters name none. The pin alone re-holds the
+// address either way; naming the pool makes MetalLB refuse a pin that has
+// left it.
+func (r *IPAddressReconciler) holdPool(ctx context.Context, addr *localv1alpha1.IPAddress) string {
+	class := &localv1alpha1.IPAddressClass{}
+	if err := r.Get(ctx, types.NamespacedName{Name: addr.Spec.ClassName}, class); err != nil {
+		return ""
+	}
+	params, err := driver.ParseClassParameters(class.Spec.Parameters)
+	if err != nil {
+		return ""
+	}
+	return params.Pool
 }
 
 // finalize is teardown: delete the reservation's placeholder (releasing

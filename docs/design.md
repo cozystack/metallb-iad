@@ -42,11 +42,11 @@ Consequences that shape everything below:
   guarantee — except during handoff gaps (§5).
 - In the proposal's capability terms the driver implements **Allocate +
   Pin, not Adopt**; every address it creates carries `source.fromClass`
-  (the pool the placeholder draws from belongs to the class; no
+  (the placeholder draws from the pool the class names; no
   externally-owned reservation is involved).
 
 The driver is four independent, idempotent reconciliation loops —
-reservation (§2), backend rendering (§3), holding (§4), and association
+reservation (§2), the backend reference (§3), holding (§4), and association
 (§5) — plus teardown and conflict recovery (§6–§7). The driver holds no
 state outside the cluster.
 
@@ -99,24 +99,47 @@ backed by an existing `IPAddress` are exempt — their lifecycle belongs to
 the address, and under `Retain` they keep holding after the claim is
 gone.
 
-## 3. Backend rendering (per class)
+## 3. The backend reference (per class)
 
-For each `IPAddressClass` naming this driver, render exactly two MetalLB
-objects, both owner-referenced to the class so garbage collection removes
-them with it:
+A class names an existing MetalLB `IPAddressPool` in its parameters
+(`parameters.pool`), looked up in the MetalLB namespace. The admin owns the
+pool and its `L2Advertisement` or `BGPAdvertisement`; the driver only reads
+them (proposal decision 0003). Range syntax, `avoidBuggyIPs`, BGP and
+`serviceAllocation` are therefore MetalLB settings, not class parameters.
 
-- an `IPAddressPool` (`iad-<class>`) covering the class CIDRs
-  (`parameters.addresses`), with **`autoAssign: false`** — plain Services
-  never draw from the reserved range automatically; placeholders reach it
-  by explicit pool selection, and workloads only ever via pins the driver
-  writes;
-- an `L2Advertisement` selecting that pool — advertisement selects pools,
-  not addresses, so one object covers every address the class will ever
-  hold.
+The driver refuses a class for new reservations, with a `PoolRefused`
+event on the class and on each claim it would provision, when:
 
-This is the proposal's §7 shape verbatim: one pool and one advertisement
-per address source, for the life of the cluster. No pool per tenant, no
-/32s, and the admin configures nothing per address.
+- the parameters do not parse or name no pool (`parameters.addresses`, the
+  earlier format, is rejected by name);
+- the pool does not exist;
+- the pool auto-assigns. MetalLB treats an absent `autoAssign` as true, so
+  the pool must set `autoAssign: false`; only placeholders, by naming the
+  pool, and Services the driver pins draw from it;
+- another class of this driver names the same pool. Every class naming it
+  is refused.
+
+A refusal blocks only new allocation placeholders. A placeholder MetalLB
+has already assigned is still recorded, and existing addresses stay held.
+
+MetalLB applies a pool's `serviceAllocation` to pinned Services too, so a
+pool that sets one must admit the placeholder namespace and every
+namespace whose Services name claims of the class; `serviceSelectors` must
+match both. The driver does not check this yet: it belongs to the
+proposal's §5 serviceability check, which tests a consumer before the hold
+is released.
+
+The driver reads `IPAddressPool` as an unstructured object. MetalLB's API
+types have no module of their own: importing them adds MetalLB's root
+module (`go.universe.tf/metallb`), whose requirements would then set the
+driver's Kubernetes and controller-runtime versions.
+
+The driver fronts one MetalLB instance. `--lb-class` names that instance's
+`--lb-class`, empty for one that serves Services without a
+`loadBalancerClass`; every placeholder carries it as
+`spec.loadBalancerClass`. An auto-claimed Service carries none, so a class
+marked for auto-claim on a driver with a non-empty value gets an
+`AutoClaimUnservable` event.
 
 ## 4. Holding: the placeholder invariant
 
@@ -278,9 +301,6 @@ have no write access to; the `--placeholder-namespace` flag names it.
   the shared-handoff optimization; not closable in general.
 - **No backwards inventory** (proposal §6): addresses MetalLB assigned to
   plain Services are not imported into the ledger after the fact.
-- **L2 only, CIDRs only**: BGP advertisement rendering and MetalLB's
-  `a.b.c.d-e.f.g.h` range syntax in class parameters are future
-  parameters, not shapes the algorithm depends on.
 - **Dual-stack pinning** assumes the Service's `ipFamilies` accept both
   pinned addresses; the driver orders v4 first but does not reconcile
   family policy mismatches.

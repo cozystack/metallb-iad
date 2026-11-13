@@ -68,6 +68,7 @@ spec:
           args:
             - --metallb-namespace={{ .Values.metallbNamespace }}
             - --placeholder-namespace={{ include "metallb-iad.placeholderNamespace" . }}
+            - --lb-class={{ .Values.loadBalancerClass }}
             - --leader-elect={{ .Values.controller.leaderElect }}
             - --metrics-bind-address={{ .Values.controller.metricsBindAddress }}
             - --health-probe-bind-address=:8081
