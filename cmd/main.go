@@ -78,7 +78,8 @@ func main() {
 		"The namespace reservation placeholder Services are created in. Tenants must have no write access to it.")
 	flag.StringVar(&loadBalancerClass, "lb-class", "",
 		"The --lb-class of the MetalLB instance this driver fronts; empty for the cluster's default implementation. "+
-			"Placeholders carry it as spec.loadBalancerClass.")
+			"Placeholders carry it as spec.loadBalancerClass. The driver serves only IPAddressClasses whose "+
+			"spec.loadBalancerClass equals it (unset when empty) and pins only Services whose spec.loadBalancerClass does.")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -248,6 +249,7 @@ func main() {
 		Scheme:               mgr.GetScheme(),
 		Recorder:             mgr.GetEventRecorderFor("iad-service-controller"),
 		PlaceholderNamespace: placeholderNamespace,
+		LoadBalancerClass:    loadBalancerClass,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Service")
 		os.Exit(1)

@@ -203,16 +203,46 @@ func TestRefusedPoolStillRecordsAnAssignedPlaceholder(t *testing.T) {
 	}
 }
 
-func TestPlaceholderCarriesLoadBalancerClass(t *testing.T) {
-	c := testClient(t, iadClass(), stampedClaim(localv1alpha1.FamilyIPv4))
-	r := claimRec(c)
-	r.LoadBalancerClass = "metallb.io/reserved"
-	reconcileOnce(t, r, "tenant-a", "web")
+func TestClaimIsProvisionedOnlyByTheInstanceServingItsClass(t *testing.T) {
+	cases := map[string]struct {
+		classLB  *string
+		driverLB string
+		served   bool
+	}{
+		"unset, default instance":     {classLB: nil, driverLB: "", served: true},
+		"unset, non-default instance": {classLB: nil, driverLB: "metallb.io/reserved"},
+		"matching":                    {classLB: new("metallb.io/reserved"), driverLB: "metallb.io/reserved", served: true},
+		"another instance's":          {classLB: new("metallb.io/other"), driverLB: "metallb.io/reserved"},
+		"set, default instance":       {classLB: new("metallb.io/other"), driverLB: ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			class := iadClass()
+			class.Spec.LoadBalancerClass = tc.classLB
+			recorder := record.NewFakeRecorder(100)
+			c := testClient(t, class, stampedClaim(localv1alpha1.FamilyIPv4))
+			r := claimRec(c)
+			r.Recorder = recorder
+			r.LoadBalancerClass = tc.driverLB
+			reconcileOnce(t, r, "tenant-a", "web")
 
-	placeholders := listPlaceholders(t, c)
-	if len(placeholders) != 1 || placeholders[0].Spec.LoadBalancerClass == nil ||
-		*placeholders[0].Spec.LoadBalancerClass != "metallb.io/reserved" {
-		t.Errorf("placeholders = %+v, want one carrying the driver's loadBalancerClass", placeholders)
+			got := listPlaceholders(t, c)
+			if !tc.served {
+				if len(got) != 0 {
+					t.Errorf("placeholders = %d, want none from an instance not serving the class", len(got))
+				}
+				if events := drainEvents(recorder); len(events) != 0 {
+					t.Errorf("events = %v, want none", events)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("placeholders = %d, want 1", len(got))
+			}
+			if lb := deref(got[0].Spec.LoadBalancerClass); lb != tc.driverLB {
+				t.Errorf("placeholder loadBalancerClass = %q, want %q", lb, tc.driverLB)
+			}
+		})
 	}
 }
 

@@ -39,9 +39,9 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate the ClusterRole straight into the Helm chart (the CRDs belong to address-controller).
+manifests: controller-gen ## Generate the ClusterRole into the Helm chart, which names it per release (the CRDs belong to address-controller).
 	$(CONTROLLER_GEN) rbac:roleName=metallb-iad paths="./..." \
-		output:rbac:artifacts:config=$(CHART)/templates
+		output:rbac:artifacts:config=$(CHART)/files
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

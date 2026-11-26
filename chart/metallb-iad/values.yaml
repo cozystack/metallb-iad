@@ -9,7 +9,9 @@ metallbNamespace: metallb-system
 
 # The --lb-class of the MetalLB instance this driver fronts. Empty for a
 # MetalLB that serves Services without a loadBalancerClass, the cluster
-# default. Placeholders carry it as spec.loadBalancerClass.
+# default. Placeholders carry it as spec.loadBalancerClass. The driver serves
+# only the IPAddressClasses whose spec.loadBalancerClass equals it (unset when
+# it is empty) and pins only Services whose spec.loadBalancerClass does.
 loadBalancerClass: ""
 
 # Namespace the reservation placeholder Services live in. Empty means the

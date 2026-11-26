@@ -91,10 +91,7 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, nil
 	}
 
-	className := claim.Status.ClassName
-	if className == "" {
-		className = claim.Spec.ClassName
-	}
+	className := claimClassName(claim)
 	if className == "" {
 		return ctrl.Result{}, nil
 	}
@@ -102,7 +99,8 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.Get(ctx, types.NamespacedName{Name: className}, class); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if class.Spec.Provisioner != driver.ProvisionerName {
+	if !servesClass(class, r.LoadBalancerClass) {
+		// Another driver's class, or another instance's of this driver.
 		return ctrl.Result{}, nil
 	}
 
@@ -116,7 +114,7 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, r.cleanupOrphanPlaceholders(ctx, req.NamespacedName)
 	}
 
-	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, class)
+	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, r.LoadBalancerClass, class)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -254,6 +252,15 @@ func (r *ClaimReconciler) provisionFamily(ctx context.Context, claim *localv1alp
 		return false, err
 	}
 	return true, r.Update(ctx, placeholder)
+}
+
+// claimClassName is the class a claim draws from: the one the core
+// resolved, else the one it names.
+func claimClassName(claim *localv1alpha1.IPAddressClaim) string {
+	if claim.Status.ClassName != "" {
+		return claim.Status.ClassName
+	}
+	return claim.Spec.ClassName
 }
 
 // observedIP extracts the assigned load-balancer IP of a placeholder.

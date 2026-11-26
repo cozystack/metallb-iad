@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
@@ -93,7 +95,7 @@ func TestAssociateHandsOffFromPlaceholderToService(t *testing.T) {
 	claim, addr := boundClaimWithAddress()
 	hold := holdPlaceholderFor(addr)
 	svc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
-	c := testClient(t, claim, addr, hold, svc)
+	c := testClient(t, iadClass(), claim, addr, hold, svc)
 	reconcileOnce(t, serviceRec(c), "tenant-a", "web-lb")
 
 	got := getService(t, c, "web-lb")
@@ -122,7 +124,7 @@ func TestSecondServiceIsRejected(t *testing.T) {
 	}
 	holderSvc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
 	thief := lbService("thief", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
-	c := testClient(t, claim, addr, holderSvc, thief)
+	c := testClient(t, iadClass(), claim, addr, holderSvc, thief)
 	reconcileOnce(t, serviceRec(c), "tenant-a", "thief")
 
 	got := getService(t, c, "thief")
@@ -143,7 +145,7 @@ func TestReassociationAfterHolderDeleted(t *testing.T) {
 		Kind: "Service", Namespace: "tenant-a", Name: "old-vm",
 	}
 	newSvc := lbService("new-vm", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
-	c := testClient(t, claim, addr, newSvc)
+	c := testClient(t, iadClass(), claim, addr, newSvc)
 	reconcileOnce(t, serviceRec(c), "tenant-a", "new-vm")
 
 	got := getService(t, c, "new-vm")
@@ -165,7 +167,7 @@ func TestRemovingClaimAnnotationWithdrawsPin(t *testing.T) {
 		driver.MetalLBPinAnnotation: "203.0.113.1",
 		driver.PinnedAnnotation:     "true",
 	})
-	c := testClient(t, claim, addr, svc)
+	c := testClient(t, iadClass(), claim, addr, svc)
 	reconcileOnce(t, serviceRec(c), "tenant-a", "web-lb")
 
 	got := getService(t, c, "web-lb")
@@ -202,7 +204,7 @@ func TestWrongfulAssignmentDrivesConflict(t *testing.T) {
 	// reference — explicit pin, race, or impersonated write.
 	thief := lbService("thief", nil)
 	thief.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.1"}}
-	c := testClient(t, claim, addr, thief)
+	c := testClient(t, iadClass(), claim, addr, thief)
 	reconcileOnce(t, serviceRec(c), "tenant-a", "thief")
 
 	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase != localv1alpha1.IPAddressConflict {
@@ -234,5 +236,146 @@ func TestUntrackedAssignmentIsLeftAlone(t *testing.T) {
 
 	if addrs := listAddresses(t, c); len(addrs) != 0 {
 		t.Errorf("unexpected IPAddress objects: %v", addrs)
+	}
+}
+
+func TestServiceOfAnotherInstanceIsLeftToIt(t *testing.T) {
+	class := iadClass()
+	class.Spec.LoadBalancerClass = new("metallb.io/other")
+	claim, addr := boundClaimWithAddress()
+	svc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
+	svc.Spec.LoadBalancerClass = new("metallb.io/other")
+	recorder := record.NewFakeRecorder(100)
+	c := testClient(t, class, claim, addr, svc)
+	r := serviceRec(c)
+	r.Recorder = recorder
+	reconcileOnce(t, r, "tenant-a", "web-lb")
+
+	if _, pinned := getService(t, c, "web-lb").Annotations[driver.MetalLBPinAnnotation]; pinned {
+		t.Error("pinned a Service of another loadBalancerClass")
+	}
+	if holder := getAddr(t, c, "ip-203-0-113-1").Status.AssociatedTo; holder != nil {
+		t.Errorf("associatedTo = %+v, want none", holder)
+	}
+	if events := drainEvents(recorder); len(events) != 0 {
+		t.Errorf("events = %v, want none", events)
+	}
+}
+
+func TestServiceOfMatchingLoadBalancerClassIsAssociated(t *testing.T) {
+	class := iadClass()
+	class.Spec.LoadBalancerClass = new("metallb.io/reserved")
+	claim, addr := boundClaimWithAddress()
+	svc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
+	svc.Spec.LoadBalancerClass = new("metallb.io/reserved")
+	c := testClient(t, class, claim, addr, svc)
+	r := serviceRec(c)
+	r.LoadBalancerClass = "metallb.io/reserved"
+	reconcileOnce(t, r, "tenant-a", "web-lb")
+
+	if pin := getService(t, c, "web-lb").Annotations[driver.MetalLBPinAnnotation]; pin != "203.0.113.1" {
+		t.Errorf("pin annotation = %q, want 203.0.113.1", pin)
+	}
+}
+
+func TestServiceNamingAnotherInstancesClaimIsRefused(t *testing.T) {
+	// The Service reaches this instance's MetalLB, the claim's address is
+	// in another's pool.
+	class := iadClass()
+	class.Spec.LoadBalancerClass = new("metallb.io/other")
+	claim, addr := boundClaimWithAddress()
+	svc := lbService("web-lb", map[string]string{localv1alpha1.ServiceClaimAnnotation: "web"})
+	recorder := record.NewFakeRecorder(100)
+	c := testClient(t, class, claim, addr, svc)
+	r := serviceRec(c)
+	r.Recorder = recorder
+	reconcileOnce(t, r, "tenant-a", "web-lb")
+
+	if _, pinned := getService(t, c, "web-lb").Annotations[driver.MetalLBPinAnnotation]; pinned {
+		t.Error("pinned a Service to a claim of another instance's class")
+	}
+	if holder := getAddr(t, c, "ip-203-0-113-1").Status.AssociatedTo; holder != nil {
+		t.Errorf("associatedTo = %+v, want none", holder)
+	}
+	events := drainEvents(recorder)
+	if len(events) != 1 || !strings.HasPrefix(events[0], "Warning "+localv1alpha1.ReasonLoadBalancerClassMismatch+" ") {
+		t.Errorf("events = %v, want one LoadBalancerClassMismatch", events)
+	}
+}
+
+func TestServiceOfAnotherLoadBalancerClassStillDrivesConflict(t *testing.T) {
+	claim, addr := boundClaimWithAddress()
+	thief := lbService("thief", nil)
+	thief.Spec.LoadBalancerClass = new("example.com/other-lb")
+	thief.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.1"}}
+	c := testClient(t, iadClass(), claim, addr, thief)
+	reconcileOnce(t, serviceRec(c), "tenant-a", "thief")
+
+	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase != localv1alpha1.IPAddressConflict {
+		t.Errorf("phase = %q, want Conflict", got.Status.Phase)
+	}
+}
+
+func TestAnotherInstancesPlaceholderIsNotAConflict(t *testing.T) {
+	class := iadClass()
+	class.Spec.LoadBalancerClass = new("metallb.io/other")
+	claim, addr := boundClaimWithAddress()
+	hold := driver.NewPlaceholder(driver.HoldPlaceholderName(addr.Name), "other-iad-system",
+		testPool, "metallb.io/other", driver.FamilyOf(addr.Spec.Address), addr.Spec.Address)
+	hold.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.1"}}
+	c := testClient(t, class, claim, addr, hold)
+	_, err := serviceRec(c).Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "other-iad-system", Name: hold.Name},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase != localv1alpha1.IPAddressBound {
+		t.Errorf("phase = %q, want Bound: another instance's placeholder holds it", got.Status.Phase)
+	}
+}
+
+func TestMismatchWithdrawsAnExistingPin(t *testing.T) {
+	// web-lb was pinned to claim "web"; its annotation now names "other",
+	// a claim of another instance's class.
+	class := iadClass()
+	other := iadClass()
+	other.Name = "public-other"
+	other.Spec.LoadBalancerClass = new("metallb.io/other")
+	claim, addr := boundClaimWithAddress()
+	addr.Status.AssociatedTo = &localv1alpha1.AssociationReference{Kind: "Service", Namespace: "tenant-a", Name: "web-lb"}
+	otherClaim := stampedClaim(localv1alpha1.FamilyIPv4)
+	otherClaim.Name, otherClaim.UID = "other", "claim-uid-2"
+	otherClaim.Spec.ClassName, otherClaim.Status.ClassName = other.Name, other.Name
+	otherClaim.Status.Phase = localv1alpha1.ClaimBound
+	otherClaim.Status.Addresses = []localv1alpha1.BoundAddress{{Name: "ip-198-51-100-1", Address: "198.51.100.1"}}
+	otherAddr := &localv1alpha1.IPAddress{
+		ObjectMeta: metav1.ObjectMeta{Name: "ip-198-51-100-1"},
+		Spec: localv1alpha1.IPAddressSpec{
+			ClassName: other.Name, Address: "198.51.100.1",
+			ClaimRef: &localv1alpha1.ClaimReference{Namespace: "tenant-a", Name: "other", UID: "claim-uid-2"},
+		},
+	}
+	svc := lbService("web-lb", map[string]string{
+		localv1alpha1.ServiceClaimAnnotation: "other",
+		driver.MetalLBPinAnnotation:          "203.0.113.1",
+		driver.PinnedAnnotation:              driver.MarkerValue,
+	})
+	recorder := record.NewFakeRecorder(100)
+	c := testClient(t, class, other, claim, addr, otherClaim, otherAddr, svc)
+	r := serviceRec(c)
+	r.Recorder = recorder
+	reconcileOnce(t, r, "tenant-a", "web-lb")
+
+	if _, pinned := getService(t, c, "web-lb").Annotations[driver.MetalLBPinAnnotation]; pinned {
+		t.Error("the pin for the earlier claim was kept")
+	}
+	if holder := getAddr(t, c, "ip-203-0-113-1").Status.AssociatedTo; holder != nil {
+		t.Errorf("associatedTo = %+v, want the earlier association withdrawn", holder)
+	}
+	events := drainEvents(recorder)
+	if len(events) == 0 || !strings.HasPrefix(events[0], "Warning "+localv1alpha1.ReasonLoadBalancerClassMismatch+" ") {
+		t.Errorf("events = %v, want LoadBalancerClassMismatch first", events)
 	}
 }
