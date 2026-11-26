@@ -10,7 +10,7 @@ PLATFORMS ?= linux/amd64,linux/arm64
 
 CHART := chart/metallb-iad
 # Chart.yaml carries a 0.0.0 placeholder; the real version is stamped here.
-CHART_VERSION ?= 0.1.0
+CHART_VERSION ?= 0.2.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
