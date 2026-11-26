@@ -64,21 +64,31 @@ func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	if !addr.DeletionTimestamp.IsZero() {
-		return ctrl.Result{}, r.finalize(ctx, addr)
-	}
-
-	if addr.Status.Phase == localv1alpha1.IPAddressConflict {
-		return ctrl.Result{}, r.maybeClearConflict(ctx, addr)
-	}
-
-	// The hold invariant applies only to addresses of classes this driver
-	// serves, and only when the address parses.
-	ours, err := r.servedByUs(ctx, addr)
+	ours, classGone, err := r.servedByUs(ctx, addr)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if !ours || driver.FamilyOf(addr.Spec.Address) == "" {
+
+	if !addr.DeletionTimestamp.IsZero() {
+		// The core holds a class until its addresses are gone, so a missing
+		// class means its finalizer was removed by hand; teardown then
+		// proceeds in every instance rather than in none.
+		if !ours && !classGone {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, r.finalize(ctx, addr)
+	}
+
+	// Conflict recovery and the hold invariant apply only to addresses of
+	// classes this instance serves, and the hold only when the address
+	// parses.
+	if !ours {
+		return ctrl.Result{}, nil
+	}
+	if addr.Status.Phase == localv1alpha1.IPAddressConflict {
+		return ctrl.Result{}, r.maybeClearConflict(ctx, addr)
+	}
+	if driver.FamilyOf(addr.Spec.Address) == "" {
 		return ctrl.Result{}, nil
 	}
 
@@ -107,17 +117,18 @@ func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, r.ensureHold(ctx, addr)
 }
 
-// servedByUs reports whether the address's class names this driver.
-func (r *IPAddressReconciler) servedByUs(ctx context.Context, addr *localv1alpha1.IPAddress) (bool, error) {
+// servedByUs reports whether this instance serves the address's class
+// (servesClass), and whether that class no longer exists.
+func (r *IPAddressReconciler) servedByUs(ctx context.Context, addr *localv1alpha1.IPAddress) (ours, classGone bool, err error) {
 	class := &localv1alpha1.IPAddressClass{}
-	err := r.Get(ctx, types.NamespacedName{Name: addr.Spec.ClassName}, class)
+	err = r.Get(ctx, types.NamespacedName{Name: addr.Spec.ClassName}, class)
 	if apierrors.IsNotFound(err) {
-		return false, nil
+		return false, true, nil
 	}
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-	return class.Spec.Provisioner == driver.ProvisionerName, nil
+	return servesClass(class, r.LoadBalancerClass), false, nil
 }
 
 // holderLive reports whether the associated workload still exists. Holder

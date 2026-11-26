@@ -31,6 +31,10 @@ spec:
     pool: public    # an existing MetalLB IPAddressPool with autoAssign: false
 ```
 
+A class whose pool belongs to a MetalLB instance with a `--lb-class` also
+sets `spec.loadBalancerClass` to that value; see
+[Several MetalLB instances](#several-metallb-instances).
+
 The class names MetalLB configuration and does not restate it: the admin
 creates the pool and its advertisement in MetalLB's own terms, and the driver
 only reads them.
@@ -78,9 +82,10 @@ Four controllers implement the driver side of the contract:
 Packaged as a Helm chart at [`chart/metallb-iad`](chart/metallb-iad) (no
 kustomize). The CRDs belong to the
 [address-controller](https://github.com/cozystack/address-controller) chart —
-install that first. The driver's ClusterRole
-(`chart/metallb-iad/templates/role.yaml`) is controller-gen output written by
-`make manifests`, never edited by hand.
+install that first. The driver's ClusterRole rules
+(`chart/metallb-iad/files/role.yaml`) are controller-gen output written by
+`make manifests`, never edited by hand; the chart names the ClusterRole and
+its binding `metallb-iad-<release namespace>`.
 
 ```sh
 helm upgrade --install metallb-iad chart/metallb-iad \
@@ -99,6 +104,25 @@ namespace.
 The driver image is published as `ghcr.io/cozystack/metallb-iad:main` (plus
 `main-<sha>` and semver tags) by the release workflow on every push to main.
 
+### Several MetalLB instances
+
+Install one release per MetalLB instance, each in its own namespace, with
+`loadBalancerClass` set to that instance's `--lb-class` (empty for the one
+that serves Services without a `loadBalancerClass`) and `metallbNamespace`
+to the namespace its pools live in. An instance serves only the classes
+whose `spec.loadBalancerClass` matches its own, a class that leaves the
+field unset belonging to the instance with an empty one, and pins only
+Services whose `spec.loadBalancerClass` matches its own. A tenant Service
+must therefore carry the `loadBalancerClass` of the class it names a claim
+of; one that does not is not pinned, and the instance its own
+`loadBalancerClass` reaches records a `LoadBalancerClassMismatch` event on
+it.
+
+The admission policy is cluster-wide: enable it in one release and list the
+other releases' ServiceAccounts
+(`system:serviceaccount:<namespace>:metallb-iad`) in its
+`admissionPolicy.allowedUsernames`, or it denies their pins.
+
 ### Reserving part of an existing pool
 
 A class cannot name a pool with `autoAssign: true`, and MetalLB rejects
@@ -114,6 +138,35 @@ auto-assigns today, split it:
 2. Create a pool for the reserved part with `autoAssign: false`, and an
    `L2Advertisement` or `BGPAdvertisement` selecting it.
 3. Create the class with `parameters.pool` naming the new pool.
+
+### Upgrading from v0.1 (breaking)
+
+An install whose `loadBalancerClass` is empty upgrades with no action.
+
+An install whose `loadBalancerClass` is set cannot be upgraded in place. Its
+classes predate `spec.loadBalancerClass` and leave it unset, so they belong
+to the cluster's default implementation, and the field cannot be set
+afterwards. After the upgrade the driver serves none of them:
+
+- Services it pinned get a `LoadBalancerClassMismatch` event, and the pin is
+  withdrawn, so they lose their addresses.
+- Their addresses are no longer held, and deleting one hangs on the
+  driver's `teardown` finalizer.
+- New claims of those classes stay `Pending`.
+
+Drain such an install before upgrading, while the v0.1 driver still runs,
+in the order of address-controller's
+[Removing the controllers](https://github.com/cozystack/address-controller/blob/main/docs/operating.md#removing-the-controllers)
+steps 1–4: unannotate the Services, delete the claims, the addresses left
+behind and the classes. After the upgrade, create classes that set
+`spec.loadBalancerClass` to the driver's value and claim again. The new
+claims may get different addresses. If the driver was upgraded without
+draining, clear the `teardown` finalizer from the old classes' addresses
+by hand, as in the same section, and delete their placeholder Services
+from the placeholder namespace.
+
+The ClusterRole and its binding are renamed from `metallb-iad` to
+`metallb-iad-<release namespace>`; Helm replaces them on upgrade.
 
 ### Migrating classes that listed addresses
 

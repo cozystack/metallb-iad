@@ -175,7 +175,7 @@ func TestConflictClearsWhenOffenderGone(t *testing.T) {
 	// authorized holder, not an offender, and must not block clearing.
 	hold := holdPlaceholderFor(addr)
 	hold.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.1"}}
-	c := testClient(t, claim, addr, hold)
+	c := testClient(t, iadClass(), claim, addr, hold)
 	reconcileOnce(t, addressRec(c), "", "ip-203-0-113-1")
 
 	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase != localv1alpha1.IPAddressBound {
@@ -188,10 +188,68 @@ func TestConflictPersistsWhileOffenderHoldsAddress(t *testing.T) {
 	addr.Status.Phase = localv1alpha1.IPAddressConflict
 	thief := lbService("thief", nil)
 	thief.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{{IP: "203.0.113.1"}}
-	c := testClient(t, claim, addr, thief)
+	c := testClient(t, iadClass(), claim, addr, thief)
 	reconcileOnce(t, addressRec(c), "", "ip-203-0-113-1")
 
 	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase != localv1alpha1.IPAddressConflict {
 		t.Errorf("phase = %q, want Conflict to persist", got.Status.Phase)
+	}
+}
+
+func TestAnotherInstancesAddressIsLeftToIt(t *testing.T) {
+	class := iadClass()
+	class.Spec.LoadBalancerClass = new("metallb.io/other")
+	claim, addr := boundClaimWithAddress()
+	c := testClient(t, class, claim, addr)
+	reconcileOnce(t, addressRec(c), "", "ip-203-0-113-1")
+
+	if placeholders := listPlaceholders(t, c); len(placeholders) != 0 {
+		t.Errorf("held another instance's address with %d placeholders", len(placeholders))
+	}
+}
+
+func TestAnotherInstancesConflictIsLeftToIt(t *testing.T) {
+	class := iadClass()
+	class.Spec.LoadBalancerClass = new("metallb.io/other")
+	claim, addr := boundClaimWithAddress()
+	addr.Status.Phase = localv1alpha1.IPAddressConflict
+	c := testClient(t, class, claim, addr)
+	reconcileOnce(t, addressRec(c), "", "ip-203-0-113-1")
+
+	if got := getAddr(t, c, "ip-203-0-113-1"); got.Status.Phase != localv1alpha1.IPAddressConflict {
+		t.Errorf("phase = %q, want Conflict left for the instance serving the class", got.Status.Phase)
+	}
+}
+
+func TestTeardownIsLeftToTheInstanceServingTheClass(t *testing.T) {
+	class := iadClass()
+	class.Spec.LoadBalancerClass = new("metallb.io/other")
+	claim, addr := boundClaimWithAddress()
+	addr.Finalizers = []string{driver.TeardownFinalizer}
+	c := testClient(t, class, claim, addr)
+	if err := c.Delete(context.Background(), addr); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, addressRec(c), "", "ip-203-0-113-1")
+
+	if got := getAddr(t, c, "ip-203-0-113-1"); len(got.Finalizers) != 1 {
+		t.Errorf("finalizers = %v, want the teardown finalizer kept", got.Finalizers)
+	}
+}
+
+func TestTeardownProceedsWhenTheClassIsGone(t *testing.T) {
+	claim, addr := boundClaimWithAddress()
+	addr.Finalizers = []string{driver.TeardownFinalizer}
+	c := testClient(t, claim, addr)
+	if err := c.Delete(context.Background(), addr); err != nil {
+		t.Fatal(err)
+	}
+	r := addressRec(c)
+	r.LoadBalancerClass = "metallb.io/reserved"
+	reconcileOnce(t, r, "", "ip-203-0-113-1")
+
+	err := c.Get(context.Background(), types.NamespacedName{Name: "ip-203-0-113-1"}, &localv1alpha1.IPAddress{})
+	if !apierrors.IsNotFound(err) {
+		t.Errorf("address still present after teardown: %v", err)
 	}
 }

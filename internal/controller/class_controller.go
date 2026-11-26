@@ -30,13 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
-	"github.com/cozystack/metallb-iad/internal/driver"
 )
 
-// ClassReconciler checks each IPAddressClass served by this driver against
-// the MetalLB pool it names and reports, as events on the class, why the
-// class cannot back new reservations. The pool and its advertisements are
-// the admin's; the driver only reads them.
+// ClassReconciler checks each IPAddressClass this instance serves
+// (servesClass) against the MetalLB pool it names and reports, as events on
+// the class, why the class cannot back new reservations. The pool and its
+// advertisements are the admin's; the driver only reads them.
 type ClassReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -60,11 +59,11 @@ func (r *ClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.Get(ctx, req.NamespacedName, class); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !class.DeletionTimestamp.IsZero() || class.Spec.Provisioner != driver.ProvisionerName {
+	if !class.DeletionTimestamp.IsZero() || !servesClass(class, r.LoadBalancerClass) {
 		return ctrl.Result{}, nil
 	}
 
-	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, class)
+	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, r.LoadBalancerClass, class)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -72,14 +71,6 @@ func (r *ClassReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		r.Recorder.Eventf(class, "Warning", "PoolRefused", "%s; claims of this class are not provisioned", problem)
 	} else {
 		logger.V(1).Info("class pool usable", "pool", pool)
-	}
-
-	// An auto-claimed Service carries no loadBalancerClass, so only the
-	// cluster's default implementation can serve it.
-	if class.Annotations[localv1alpha1.IsAutoClaimClassAnnotation] == "true" && r.LoadBalancerClass != "" {
-		r.Recorder.Eventf(class, "Warning", "AutoClaimUnservable",
-			"class is marked for auto-claim, but this driver fronts loadBalancerClass %q, which auto-claimed Services do not carry",
-			r.LoadBalancerClass)
 	}
 	return ctrl.Result{}, nil
 }
@@ -94,7 +85,7 @@ func (r *ClassReconciler) classesOfOurs(ctx context.Context, _ client.Object) []
 	}
 	var reqs []reconcile.Request
 	for _, c := range classes.Items {
-		if c.Spec.Provisioner == driver.ProvisionerName {
+		if servesClass(&c, r.LoadBalancerClass) {
 			reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: c.Name}})
 		}
 	}

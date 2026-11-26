@@ -25,8 +25,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 )
 
 func classRec(c client.Client, lbClass string) (*ClassReconciler, *record.FakeRecorder) {
@@ -94,18 +92,6 @@ func TestClassPoolProblemsAreReported(t *testing.T) {
 	}
 }
 
-func TestAutoClaimClassOfANonDefaultInstanceWarns(t *testing.T) {
-	class := iadClass()
-	class.Annotations = map[string]string{localv1alpha1.IsAutoClaimClassAnnotation: "true"}
-	r, recorder := classRec(testClient(t, class), "metallb.io/reserved")
-	reconcileOnce(t, r, "", "public")
-
-	events := drainEvents(recorder)
-	if len(events) != 1 || !strings.Contains(events[0], "AutoClaimUnservable") {
-		t.Errorf("events = %v, want one AutoClaimUnservable", events)
-	}
-}
-
 func TestClassOfAnotherProvisionerIsIgnored(t *testing.T) {
 	class := iadClass()
 	class.Spec.Provisioner = "someone.else.example.com"
@@ -114,5 +100,50 @@ func TestClassOfAnotherProvisionerIsIgnored(t *testing.T) {
 
 	if events := drainEvents(recorder); len(events) != 0 {
 		t.Errorf("events = %v, want none for another driver's class", events)
+	}
+}
+
+func TestClassIsCheckedOnlyByTheInstanceServingIt(t *testing.T) {
+	cases := map[string]struct {
+		classLB  *string
+		driverLB string
+		served   bool
+	}{
+		"unset, default instance":     {classLB: nil, driverLB: "", served: true},
+		"unset, non-default instance": {classLB: nil, driverLB: "metallb.io/reserved"},
+		"matching":                    {classLB: new("metallb.io/reserved"), driverLB: "metallb.io/reserved", served: true},
+		"another instance's":          {classLB: new("metallb.io/other"), driverLB: "metallb.io/reserved"},
+		"set, default instance":       {classLB: new("metallb.io/other"), driverLB: ""},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			class := iadClass()
+			class.Spec.LoadBalancerClass = tc.classLB
+			// No pool: the instance serving the class reports it missing.
+			r, recorder := classRec(bareTestClient(t, class), tc.driverLB)
+			reconcileOnce(t, r, "", "public")
+
+			events := drainEvents(recorder)
+			if tc.served && (len(events) != 1 || !strings.Contains(events[0], "PoolRefused")) {
+				t.Errorf("events = %v, want one PoolRefused from the serving instance", events)
+			}
+			if !tc.served && len(events) != 0 {
+				t.Errorf("events = %v, want none from an instance not serving the class", events)
+			}
+		})
+	}
+}
+
+func TestPoolNamedByAnotherInstancesClassIsNotShared(t *testing.T) {
+	// Another instance's class naming a pool of the same name refers to
+	// that instance's MetalLB, not to ours.
+	other := iadClass()
+	other.Name = "public-other"
+	other.Spec.LoadBalancerClass = new("metallb.io/other")
+	r, recorder := classRec(testClient(t, iadClass(), other), "")
+	reconcileOnce(t, r, "", "public")
+
+	if events := drainEvents(recorder); len(events) != 0 {
+		t.Errorf("events = %v, want none: the pool is named once among this instance's classes", events)
 	}
 }

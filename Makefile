@@ -10,7 +10,7 @@ PLATFORMS ?= linux/amd64,linux/arm64
 
 CHART := chart/metallb-iad
 # Chart.yaml carries a 0.0.0 placeholder; the real version is stamped here.
-CHART_VERSION ?= 0.1.0
+CHART_VERSION ?= 0.2.0
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -39,9 +39,9 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: controller-gen ## Generate the ClusterRole straight into the Helm chart (the CRDs belong to address-controller).
+manifests: controller-gen ## Generate the ClusterRole into the Helm chart, which names it per release (the CRDs belong to address-controller).
 	$(CONTROLLER_GEN) rbac:roleName=metallb-iad paths="./..." \
-		output:rbac:artifacts:config=$(CHART)/templates
+		output:rbac:artifacts:config=$(CHART)/files
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

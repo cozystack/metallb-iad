@@ -134,12 +134,28 @@ types have no module of their own: importing them adds MetalLB's root
 module (`go.universe.tf/metallb`), whose requirements would then set the
 driver's Kubernetes and controller-runtime versions.
 
-The driver fronts one MetalLB instance. `--lb-class` names that instance's
-`--lb-class`, empty for one that serves Services without a
+Each driver instance fronts one MetalLB instance. `--lb-class` names that
+instance's `--lb-class`, empty for one that serves Services without a
 `loadBalancerClass`; every placeholder carries it as
-`spec.loadBalancerClass`. An auto-claimed Service carries none, so a class
-marked for auto-claim on a driver with a non-empty value gets an
-`AutoClaimUnservable` event.
+`spec.loadBalancerClass`.
+
+A cluster can run one driver instance per MetalLB instance. A class's
+`spec.loadBalancerClass` names the implementation that owns its pool, unset
+for the cluster default, so an instance serves a class of this driver only
+when the two match: equal values, or a class that leaves the field unset
+and an instance with an empty `--lb-class`. Every controller decides
+ownership by this one rule, so the instances split the classes between
+them. An instance provisions claims of its own classes only, checks only
+their pools (a pool counts as named twice only among its own classes), and
+holds, recovers from `Conflict` and tears down only their addresses. The one
+exception is an address whose class is gone: the core holds a class until
+its addresses are deleted, so this means someone removed the class's
+finalizer by hand, and every instance then tears the address down rather
+than none.
+
+A class that names a `loadBalancerClass` no instance fronts is served by
+none, so its claims stay pending. No instance reports it, because none can
+tell that no other instance serves it.
 
 ## 4. Holding: the placeholder invariant
 
@@ -177,6 +193,18 @@ naming a claim in the Service's own namespace). The 1:1 rule, the
 stale-holder takeover, the rejection of a second Service, and the
 never-touch-hand-written-pins rule are unchanged. What changes with
 placeholders is the *transfer of the hold*.
+
+An instance associates only Services whose `spec.loadBalancerClass` is its
+`--lb-class` (unset for the instance with an empty one): only its MetalLB
+assigns them addresses, and it leaves the rest to the instance that fronts
+theirs. One of its Services that names a claim of another instance's class
+(§3) reaches a MetalLB that does not hold the address: it gets a
+`LoadBalancerClassMismatch` event and is not pinned, and a pin the driver
+wrote for an earlier claim is withdrawn. The instance still runs conflict
+detection (§6) on Services of another `loadBalancerClass`, since a reserved address is
+wrongly held whoever assigned it, but skips those carrying the placeholder
+label: it cannot tell another instance's placeholder namespace from a
+tenant's.
 
 **Forward (associate)** — three steps, ordered so that every prefix of
 the sequence re-converges after a crash:
