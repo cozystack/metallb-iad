@@ -47,9 +47,11 @@ import (
 // the IPAddress ledger and surfaces collisions as phase Conflict — the
 // detection layer for what admission cannot prevent.
 //
-// It acts only on Services whose spec.loadBalancerClass is that of the
-// MetalLB instance the driver fronts: only that MetalLB assigns them
-// addresses. The rest belong to the driver instance fronting theirs.
+// It associates only Services whose spec.loadBalancerClass is that of the
+// MetalLB the driver fronts: only that MetalLB assigns them addresses. A
+// Service of another implementation that names one of this driver's claims
+// gets a LoadBalancerClassMismatch warning; conflict detection runs on every
+// Service.
 type ServiceReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -75,13 +77,14 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	if deref(svc.Spec.LoadBalancerClass) != r.LoadBalancerClass {
-		// Association belongs to the instance fronting the Service's
-		// implementation, but a reserved address is wrongly held whoever
-		// assigned it. Another instance's placeholders live in a namespace
-		// this one does not know, so placeholder-labelled Services are left
-		// to the instance whose loadBalancerClass they carry.
-		if !svc.DeletionTimestamp.IsZero() || driver.IsPlaceholder(svc) {
+		// The Service reaches another load-balancer implementation, which
+		// assigns its address; this driver does not associate it. A reserved
+		// address is still wrongly held whoever assigned it.
+		if !svc.DeletionTimestamp.IsZero() {
 			return ctrl.Result{}, nil
+		}
+		if err := r.reportMismatch(ctx, svc); err != nil {
+			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, r.detectConflicts(ctx, svc)
 	}
@@ -128,33 +131,15 @@ func (r *ServiceReconciler) associate(ctx context.Context, svc *corev1.Service, 
 		return err
 	}
 	if claim.Annotations[localv1alpha1.ProvisionerAnnotation] != driver.ProvisionerName {
-		// Another driver's claim; not ours to act on.
-		return nil
+		// Another driver's claim; not ours to act on. A pin this driver
+		// wrote for an earlier claim of the Service goes.
+		return r.unpin(ctx, svc)
 	}
 	if claim.Status.Phase != localv1alpha1.ClaimBound {
 		r.Recorder.Eventf(svc, "Normal", "ClaimNotBound",
 			"IPAddressClaim %q is %s; waiting for it to bind", claimName, claim.Status.Phase)
 		return nil
 	}
-	// The claim's class must be this instance's: its pool is in the MetalLB
-	// this Service reaches. A Service naming a claim of another instance's
-	// class reaches a MetalLB that does not hold the address.
-	className := claimClassName(claim)
-	if className == "" {
-		return nil
-	}
-	class := &localv1alpha1.IPAddressClass{}
-	if err := r.Get(ctx, types.NamespacedName{Name: className}, class); err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	if !servesClass(class, r.LoadBalancerClass) {
-		r.Recorder.Eventf(svc, "Warning", localv1alpha1.ReasonLoadBalancerClassMismatch,
-			"IPAddressClaim %q is of IPAddressClass %q, whose loadBalancerClass is %s; this Service's is %s",
-			claimName, class.Name, describeLoadBalancerClass(class.Spec.LoadBalancerClass),
-			describeLoadBalancerClass(svc.Spec.LoadBalancerClass))
-		return r.unpin(ctx, svc)
-	}
-
 	// One claim serves one Service: a second Service referencing the claim
 	// is rejected, loudly, rather than silently stealing the address.
 	var ips, addrNames []string
@@ -343,6 +328,38 @@ func authorizes(addr *localv1alpha1.IPAddress, svc *corev1.Service) bool {
 	holder := addr.Status.AssociatedTo
 	return holder != nil && holder.Kind == driver.ServiceKind &&
 		holder.Namespace == svc.Namespace && holder.Name == svc.Name
+}
+
+// reportMismatch records LoadBalancerClassMismatch on a Service of another
+// load-balancer implementation that names a claim this driver serves: that
+// implementation assigns the Service's address and holds none of this
+// driver's reserved ones.
+func (r *ServiceReconciler) reportMismatch(ctx context.Context, svc *corev1.Service) error {
+	claimName := svc.Annotations[localv1alpha1.ServiceClaimAnnotation]
+	if claimName == "" {
+		return nil
+	}
+	claim := &localv1alpha1.IPAddressClaim{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: svc.Namespace, Name: claimName}, claim); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if claim.Annotations[localv1alpha1.ProvisionerAnnotation] != driver.ProvisionerName {
+		return nil
+	}
+	r.Recorder.Eventf(svc, "Warning", localv1alpha1.ReasonLoadBalancerClassMismatch,
+		"IPAddressClaim %q is served by the MetalLB with loadBalancerClass %s; this Service's is %s",
+		claimName, describeLoadBalancerClass(classPtr(r.LoadBalancerClass)),
+		describeLoadBalancerClass(svc.Spec.LoadBalancerClass))
+	return nil
+}
+
+// classPtr turns the driver's --lb-class into the Service field it stands
+// for: empty is unset.
+func classPtr(lbClass string) *string {
+	if lbClass == "" {
+		return nil
+	}
+	return &lbClass
 }
 
 // describeLoadBalancerClass renders an optional loadBalancerClass for an

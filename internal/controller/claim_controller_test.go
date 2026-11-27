@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -66,7 +67,7 @@ func bareTestClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
-		WithStatusSubresource(&localv1alpha1.IPAddress{}, &localv1alpha1.IPAddressClaim{}, &corev1.Service{}).
+		WithStatusSubresource(&localv1alpha1.IPAddress{}, &localv1alpha1.IPAddressClaim{}, &localv1alpha1.IPAddressClass{}, &corev1.Service{}).
 		WithIndex(&localv1alpha1.IPAddress{}, IPAddressByAddressIndex, func(o client.Object) []string {
 			addr := o.(*localv1alpha1.IPAddress)
 			if addr.Spec.Address == "" {
@@ -203,44 +204,20 @@ func TestRefusedPoolStillRecordsAnAssignedPlaceholder(t *testing.T) {
 	}
 }
 
-func TestClaimIsProvisionedOnlyByTheInstanceServingItsClass(t *testing.T) {
-	cases := map[string]struct {
-		classLB  *string
-		driverLB string
-		served   bool
-	}{
-		"unset, default instance":     {classLB: nil, driverLB: "", served: true},
-		"unset, non-default instance": {classLB: nil, driverLB: "metallb.io/reserved"},
-		"matching":                    {classLB: new("metallb.io/reserved"), driverLB: "metallb.io/reserved", served: true},
-		"another instance's":          {classLB: new("metallb.io/other"), driverLB: "metallb.io/reserved"},
-		"set, default instance":       {classLB: new("metallb.io/other"), driverLB: ""},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			class := iadClass()
-			class.Spec.LoadBalancerClass = tc.classLB
-			recorder := record.NewFakeRecorder(100)
-			c := testClient(t, class, stampedClaim(localv1alpha1.FamilyIPv4))
+func TestPlaceholderCarriesTheDriversLoadBalancerClass(t *testing.T) {
+	for _, lbClass := range []string{"", "metallb.io/reserved"} {
+		t.Run(fmt.Sprintf("--lb-class %q", lbClass), func(t *testing.T) {
+			c := testClient(t, iadClass(), stampedClaim(localv1alpha1.FamilyIPv4))
 			r := claimRec(c)
-			r.Recorder = recorder
-			r.LoadBalancerClass = tc.driverLB
+			r.LoadBalancerClass = lbClass
 			reconcileOnce(t, r, "tenant-a", "web")
 
 			got := listPlaceholders(t, c)
-			if !tc.served {
-				if len(got) != 0 {
-					t.Errorf("placeholders = %d, want none from an instance not serving the class", len(got))
-				}
-				if events := drainEvents(recorder); len(events) != 0 {
-					t.Errorf("events = %v, want none", events)
-				}
-				return
-			}
 			if len(got) != 1 {
 				t.Fatalf("placeholders = %d, want 1", len(got))
 			}
-			if lb := deref(got[0].Spec.LoadBalancerClass); lb != tc.driverLB {
-				t.Errorf("placeholder loadBalancerClass = %q, want %q", lb, tc.driverLB)
+			if lb := deref(got[0].Spec.LoadBalancerClass); lb != lbClass {
+				t.Errorf("placeholder loadBalancerClass = %q, want %q", lb, lbClass)
 			}
 		})
 	}

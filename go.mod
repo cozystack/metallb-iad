@@ -5,7 +5,7 @@ go 1.26
 godebug default=go1.23
 
 require (
-	github.com/cozystack/address-controller v0.2.0
+	github.com/cozystack/address-controller v0.3.0
 	k8s.io/api v0.32.0
 	k8s.io/apimachinery v0.32.0
 	k8s.io/client-go v0.32.0
