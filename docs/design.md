@@ -134,28 +134,20 @@ types have no module of their own: importing them adds MetalLB's root
 module (`go.universe.tf/metallb`), whose requirements would then set the
 driver's Kubernetes and controller-runtime versions.
 
-Each driver instance fronts one MetalLB instance. `--lb-class` names that
-instance's `--lb-class`, empty for one that serves Services without a
+One driver runs per cluster and fronts one MetalLB. `--lb-class` names
+that MetalLB's `--lb-class`, empty for one that serves Services without a
 `loadBalancerClass`; every placeholder carries it as
-`spec.loadBalancerClass`.
+`spec.loadBalancerClass`. The driver serves every class that names it as
+provisioner.
 
-A cluster can run one driver instance per MetalLB instance. A class's
-`spec.loadBalancerClass` names the implementation that owns its pool, unset
-for the cluster default, so an instance serves a class of this driver only
-when the two match: equal values, or a class that leaves the field unset
-and an instance with an empty `--lb-class`. Every controller decides
-ownership by this one rule, so the instances split the classes between
-them. An instance provisions claims of its own classes only, checks only
-their pools (a pool counts as named twice only among its own classes), and
-holds, recovers from `Conflict` and tears down only their addresses. The one
-exception is an address whose class is gone: the core holds a class until
-its addresses are deleted, so this means someone removed the class's
-finalizer by hand, and every instance then tears the address down rather
-than none.
-
-A class that names a `loadBalancerClass` no instance fronts is served by
-none, so its claims stay pending. No instance reports it, because none can
-tell that no other instance serves it.
+The class controller reports the result on each class it serves:
+`status.loadBalancerClass` is the driver's `--lb-class`, and the `Accepted`
+condition, with the class's `observedGeneration`, is `True` while the pool
+is usable and `False` with reason `PoolRefused` (and a `PoolRefused` event)
+when the class's parameters are invalid or its pool is missing,
+auto-assigning or named by another class. Consumers that create Services
+for the class's claims, address-controller's auto-claim among them, wait
+for `Accepted` and set the reported `loadBalancerClass`.
 
 ## 4. Holding: the placeholder invariant
 
@@ -194,17 +186,14 @@ stale-holder takeover, the rejection of a second Service, and the
 never-touch-hand-written-pins rule are unchanged. What changes with
 placeholders is the *transfer of the hold*.
 
-An instance associates only Services whose `spec.loadBalancerClass` is its
-`--lb-class` (unset for the instance with an empty one): only its MetalLB
-assigns them addresses, and it leaves the rest to the instance that fronts
-theirs. One of its Services that names a claim of another instance's class
-(§3) reaches a MetalLB that does not hold the address: it gets a
-`LoadBalancerClassMismatch` event and is not pinned, and a pin the driver
-wrote for an earlier claim is withdrawn. The instance still runs conflict
-detection (§6) on Services of another `loadBalancerClass`, since a reserved address is
-wrongly held whoever assigned it, but skips those carrying the placeholder
-label: it cannot tell another instance's placeholder namespace from a
-tenant's.
+The driver associates only Services whose `spec.loadBalancerClass` is its
+`--lb-class` (unset when that is empty): only its MetalLB assigns them
+addresses. A Service of another implementation that names one of the
+driver's claims gets a `LoadBalancerClassMismatch` event and is not pinned.
+A Service whose annotation moves to another driver's claim loses the pin
+this driver wrote for the earlier one. Conflict detection (§6) runs on
+Services of every `loadBalancerClass`, since a reserved address is wrongly
+held whoever assigned it.
 
 **Forward (associate)** — three steps, ordered so that every prefix of
 the sequence re-converges after a crash:

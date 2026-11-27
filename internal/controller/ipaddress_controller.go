@@ -72,7 +72,7 @@ func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !addr.DeletionTimestamp.IsZero() {
 		// The core holds a class until its addresses are gone, so a missing
 		// class means its finalizer was removed by hand; teardown then
-		// proceeds in every instance rather than in none.
+		// proceeds rather than leaving the address stuck.
 		if !ours && !classGone {
 			return ctrl.Result{}, nil
 		}
@@ -80,7 +80,7 @@ func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	// Conflict recovery and the hold invariant apply only to addresses of
-	// classes this instance serves, and the hold only when the address
+	// classes this driver serves, and the hold only when the address
 	// parses.
 	if !ours {
 		return ctrl.Result{}, nil
@@ -117,7 +117,7 @@ func (r *IPAddressReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{}, r.ensureHold(ctx, addr)
 }
 
-// servedByUs reports whether this instance serves the address's class
+// servedByUs reports whether this driver serves the address's class
 // (servesClass), and whether that class no longer exists.
 func (r *IPAddressReconciler) servedByUs(ctx context.Context, addr *localv1alpha1.IPAddress) (ours, classGone bool, err error) {
 	class := &localv1alpha1.IPAddressClass{}
@@ -128,7 +128,7 @@ func (r *IPAddressReconciler) servedByUs(ctx context.Context, addr *localv1alpha
 	if err != nil {
 		return false, false, err
 	}
-	return servesClass(class, r.LoadBalancerClass), false, nil
+	return servesClass(class), false, nil
 }
 
 // holderLive reports whether the associated workload still exists. Holder

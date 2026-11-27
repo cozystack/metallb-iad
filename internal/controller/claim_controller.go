@@ -99,8 +99,8 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 	if err := r.Get(ctx, types.NamespacedName{Name: className}, class); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !servesClass(class, r.LoadBalancerClass) {
-		// Another driver's class, or another instance's of this driver.
+	if !servesClass(class) {
+		// Another driver's class.
 		return ctrl.Result{}, nil
 	}
 
@@ -114,7 +114,7 @@ func (r *ClaimReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl
 		return ctrl.Result{}, r.cleanupOrphanPlaceholders(ctx, req.NamespacedName)
 	}
 
-	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, r.LoadBalancerClass, class)
+	pool, problem, err := classPool(ctx, r.Client, r.MetalLBNamespace, class)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

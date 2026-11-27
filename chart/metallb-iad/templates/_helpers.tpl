@@ -11,8 +11,7 @@ helm.sh/chart: {{ printf "metallb-iad-%s" .Chart.Version | replace "+" "_" | tru
 {{- default .Release.Namespace .Values.placeholderNamespace -}}
 {{- end -}}
 
-{{/* Name of the cluster-scoped RBAC objects. One release per namespace, so
-     driver instances fronting different MetalLBs can coexist. */}}
+{{/* Name of the cluster-scoped RBAC objects, after the release namespace. */}}
 {{- define "metallb-iad.clusterRoleName" -}}
 {{- printf "metallb-iad-%s" .Release.Namespace -}}
 {{- end -}}

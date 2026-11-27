@@ -36,12 +36,12 @@ var ipAddressPoolGVK = schema.GroupVersionKind{
 	Group: "metallb.io", Version: "v1beta1", Kind: "IPAddressPool",
 }
 
-// classPool resolves the MetalLB pool a class this instance serves names
-// (servesClass with lbClass). A non-empty problem says why the class cannot
-// back new reservations: its parameters are invalid, the pool is missing or
-// auto-assigns (driver.PoolProblem), or another class of this instance
-// names the same pool. The driver never edits the pool.
-func classPool(ctx context.Context, c client.Reader, metallbNS, lbClass string, class *localv1alpha1.IPAddressClass) (pool, problem string, err error) {
+// classPool resolves the MetalLB pool a class this driver serves names
+// (servesClass). A non-empty problem says why the class cannot back new
+// reservations: its parameters are invalid, the pool is missing or
+// auto-assigns (driver.PoolProblem), or another class of this driver names
+// the same pool. The driver never edits the pool.
+func classPool(ctx context.Context, c client.Reader, metallbNS string, class *localv1alpha1.IPAddressClass) (pool, problem string, err error) {
 	params, err := driver.ParseClassParameters(class.Spec.Parameters)
 	if err != nil {
 		return "", err.Error(), nil
@@ -57,7 +57,7 @@ func classPool(ctx context.Context, c client.Reader, metallbNS, lbClass string, 
 	if problem := driver.PoolProblem(obj); problem != "" {
 		return params.Pool, problem, nil
 	}
-	others, err := classesNamingPool(ctx, c, lbClass, params.Pool)
+	others, err := classesNamingPool(ctx, c, params.Pool)
 	if err != nil {
 		return "", "", err
 	}
@@ -68,16 +68,16 @@ func classPool(ctx context.Context, c client.Reader, metallbNS, lbClass string, 
 	return params.Pool, "", nil
 }
 
-// classesNamingPool lists, sorted, the classes this instance serves whose
+// classesNamingPool lists, sorted, the classes this driver serves whose
 // parameters name pool.
-func classesNamingPool(ctx context.Context, c client.Reader, lbClass, pool string) ([]string, error) {
+func classesNamingPool(ctx context.Context, c client.Reader, pool string) ([]string, error) {
 	classes := &localv1alpha1.IPAddressClassList{}
 	if err := c.List(ctx, classes); err != nil {
 		return nil, err
 	}
 	var names []string
 	for _, class := range classes.Items {
-		if !servesClass(&class, lbClass) || !class.DeletionTimestamp.IsZero() {
+		if !servesClass(&class) || !class.DeletionTimestamp.IsZero() {
 			continue
 		}
 		if params, err := driver.ParseClassParameters(class.Spec.Parameters); err == nil && params.Pool == pool {
@@ -88,15 +88,10 @@ func classesNamingPool(ctx context.Context, c client.Reader, lbClass, pool strin
 	return names, nil
 }
 
-// servesClass reports whether this driver instance serves class: the class
-// names this driver as its provisioner, and its loadBalancerClass is lbClass,
-// the --lb-class of the MetalLB instance the driver fronts. Unset on the
-// class and empty for lbClass both mean the cluster's default
-// implementation. Every controller decides ownership by this rule alone, so
-// instances fronting different MetalLBs split the classes between them.
-func servesClass(class *localv1alpha1.IPAddressClass, lbClass string) bool {
-	return class.Spec.Provisioner == driver.ProvisionerName &&
-		deref(class.Spec.LoadBalancerClass) == lbClass
+// servesClass reports whether this driver serves class: the class names it
+// as its provisioner. One driver runs per cluster, fronting one MetalLB.
+func servesClass(class *localv1alpha1.IPAddressClass) bool {
+	return class.Spec.Provisioner == driver.ProvisionerName
 }
 
 // deref reads an optional loadBalancerClass, unset as empty.

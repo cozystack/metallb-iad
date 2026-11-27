@@ -18,13 +18,19 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	localv1alpha1 "github.com/cozystack/address-controller/api/v1alpha1"
 )
 
 func classRec(c client.Client, lbClass string) (*ClassReconciler, *record.FakeRecorder) {
@@ -50,14 +56,39 @@ func drainEvents(recorder *record.FakeRecorder) []string {
 	}
 }
 
-func TestClassWithUsablePoolIsQuiet(t *testing.T) {
+// getClass reads the test class back.
+func getClass(t *testing.T, c client.Client) *localv1alpha1.IPAddressClass {
+	t.Helper()
+	class := &localv1alpha1.IPAddressClass{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "public"}, class); err != nil {
+		t.Fatal(err)
+	}
+	return class
+}
+
+func TestClassWithUsablePoolIsAccepted(t *testing.T) {
+	for _, lbClass := range []string{"", "metallb.io/reserved"} {
+		t.Run(fmt.Sprintf("--lb-class %q", lbClass), func(t *testing.T) {
+			c := testClient(t, iadClass())
+			r, recorder := classRec(c, lbClass)
+			reconcileOnce(t, r, "", "public")
+
+			if events := drainEvents(recorder); len(events) != 0 {
+				t.Errorf("events = %v, want none for a usable pool", events)
+			}
+			got, ok := getClass(t, c).AcceptedLoadBalancerClass()
+			if !ok || got != lbClass {
+				t.Errorf("AcceptedLoadBalancerClass() = %q, %t; want %q, true", got, ok, lbClass)
+			}
+		})
+	}
+}
+
+func TestClassPoolIsNotRendered(t *testing.T) {
 	c := testClient(t, iadClass())
-	r, recorder := classRec(c, "")
+	r, _ := classRec(c, "")
 	reconcileOnce(t, r, "", "public")
 
-	if events := drainEvents(recorder); len(events) != 0 {
-		t.Errorf("events = %v, want none for a usable pool", events)
-	}
 	pools := &unstructured.UnstructuredList{}
 	pools.SetGroupVersionKind(ipAddressPoolGVK.GroupVersion().WithKind("IPAddressPoolList"))
 	if err := c.List(context.Background(), pools); err != nil {
@@ -85,8 +116,12 @@ func TestClassPoolProblemsAreReported(t *testing.T) {
 			reconcileOnce(t, r, "", "public")
 
 			events := drainEvents(recorder)
-			if len(events) != 1 || !strings.Contains(events[0], "PoolRefused") {
+			if len(events) != 1 || !strings.Contains(events[0], ReasonPoolRefused) {
 				t.Errorf("events = %v, want one PoolRefused", events)
+			}
+			cond := meta.FindStatusCondition(getClass(t, c).Status.Conditions, localv1alpha1.ConditionAccepted)
+			if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != ReasonPoolRefused {
+				t.Errorf("Accepted condition = %+v, want False with reason %s", cond, ReasonPoolRefused)
 			}
 		})
 	}
@@ -95,55 +130,14 @@ func TestClassPoolProblemsAreReported(t *testing.T) {
 func TestClassOfAnotherProvisionerIsIgnored(t *testing.T) {
 	class := iadClass()
 	class.Spec.Provisioner = "someone.else.example.com"
-	r, recorder := classRec(bareTestClient(t, class), "")
+	c := bareTestClient(t, class)
+	r, recorder := classRec(c, "")
 	reconcileOnce(t, r, "", "public")
 
 	if events := drainEvents(recorder); len(events) != 0 {
 		t.Errorf("events = %v, want none for another driver's class", events)
 	}
-}
-
-func TestClassIsCheckedOnlyByTheInstanceServingIt(t *testing.T) {
-	cases := map[string]struct {
-		classLB  *string
-		driverLB string
-		served   bool
-	}{
-		"unset, default instance":     {classLB: nil, driverLB: "", served: true},
-		"unset, non-default instance": {classLB: nil, driverLB: "metallb.io/reserved"},
-		"matching":                    {classLB: new("metallb.io/reserved"), driverLB: "metallb.io/reserved", served: true},
-		"another instance's":          {classLB: new("metallb.io/other"), driverLB: "metallb.io/reserved"},
-		"set, default instance":       {classLB: new("metallb.io/other"), driverLB: ""},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			class := iadClass()
-			class.Spec.LoadBalancerClass = tc.classLB
-			// No pool: the instance serving the class reports it missing.
-			r, recorder := classRec(bareTestClient(t, class), tc.driverLB)
-			reconcileOnce(t, r, "", "public")
-
-			events := drainEvents(recorder)
-			if tc.served && (len(events) != 1 || !strings.Contains(events[0], "PoolRefused")) {
-				t.Errorf("events = %v, want one PoolRefused from the serving instance", events)
-			}
-			if !tc.served && len(events) != 0 {
-				t.Errorf("events = %v, want none from an instance not serving the class", events)
-			}
-		})
-	}
-}
-
-func TestPoolNamedByAnotherInstancesClassIsNotShared(t *testing.T) {
-	// Another instance's class naming a pool of the same name refers to
-	// that instance's MetalLB, not to ours.
-	other := iadClass()
-	other.Name = "public-other"
-	other.Spec.LoadBalancerClass = new("metallb.io/other")
-	r, recorder := classRec(testClient(t, iadClass(), other), "")
-	reconcileOnce(t, r, "", "public")
-
-	if events := drainEvents(recorder); len(events) != 0 {
-		t.Errorf("events = %v, want none: the pool is named once among this instance's classes", events)
+	if status := getClass(t, c).Status; len(status.Conditions) != 0 || status.LoadBalancerClass != "" {
+		t.Errorf("status = %+v, want another driver's class left unreported", status)
 	}
 }
